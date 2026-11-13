@@ -1,0 +1,11 @@
+/build*/
+/output/
+/project/
+/tools/
+*.log
+*.gfs
+*.gbs
+*.dds
+*.pam
+*.exe
+*.dll
