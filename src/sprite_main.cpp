@@ -44,12 +44,24 @@ std::size_t number(std::string_view text)
     return value;
 }
 
+std::int32_t coordinate(std::string_view text)
+{
+    std::int32_t value = 0;
+    const auto end = text.data() + text.size();
+    const auto result = std::from_chars(text.data(), end, value);
+    if (result.ec != std::errc{} || result.ptr != end)
+        throw std::runtime_error("Invalid world coordinate");
+    return value;
+}
+
 }
 
 int main(int argc, char** argv)
 {
-    if (argc != 6) {
-        std::cerr << "Usage: skullgirls-sprite <data-directory> <character> <frame> <layer|frame> <output.pam>\n";
+    const bool boxes = (argc == 5 || argc == 8) && std::string_view(argv[4]) == "boxes";
+    if (argc != 6 && !boxes) {
+        std::cerr << "Usage: skullgirls-sprite <data-directory> <character> <frame> <layer|frame> <output.pam>\n"
+                  << "       skullgirls-sprite <data-directory> <character> <frame> boxes [x y left|right]\n";
         return 2;
     }
     try {
@@ -58,11 +70,32 @@ int main(int argc, char** argv)
         const std::string prefix = "characters/" + character;
         const auto frame_index = number(argv[3]);
         const bool whole_frame = std::string_view(argv[4]) == "frame";
-        const auto slot = whole_frame ? 0 : number(argv[4]);
         const auto foit = skullgirls::read_sprite_asset(directory / "characters-foits.gfs", prefix + ".foit");
         auto art = skullgirls::read_sprite_asset(directory / "characters-art.gfs", prefix + ".art");
         const auto frames = skullgirls::read_foit_frames(foit, art.size());
         const auto& frame = frames.at(frame_index);
+        if (boxes) {
+            const bool world = argc == 8;
+            const auto x = world ? coordinate(argv[5]) : 0;
+            const auto y = world ? coordinate(argv[6]) : 0;
+            const std::string_view facing = world ? argv[7] : "right";
+            if (facing != "right" && facing != "left") throw std::runtime_error("Invalid facing direction");
+            std::cout << "origin\t" << frame.origin[0] << '\t' << frame.origin[1] << '\n';
+            for (std::size_t group = 0; group < frame.box_groups.size(); ++group) {
+                for (const auto& box : frame.box_groups[group]) {
+                    std::cout << group;
+                    if (world) {
+                        for (auto edge : skullgirls::foit_world_box(box, x, y, facing == "right"))
+                            std::cout << '\t' << edge;
+                    } else {
+                        for (auto edge : box) std::cout << '\t' << edge;
+                    }
+                    std::cout << '\n';
+                }
+            }
+            return std::cout ? 0 : 1;
+        }
+        const auto slot = whole_frame ? 0 : number(argv[4]);
         if (frame.art_bank == 4) {
             art = skullgirls::read_sprite_asset(directory / "characters-art-pt.gfs", prefix + ".art-pt");
         } else if (frame.art_bank != 5) {

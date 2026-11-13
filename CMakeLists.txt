@@ -32,6 +32,6 @@ if(WIN32)
 endif()
 
 if(WIN32)
-    add_executable(skullgirls-main-menu WIN32 src/main_menu.cpp src/menu_timings.cpp src/title_scene.cpp src/fighter_select.cpp)
+    add_executable(skullgirls-main-menu WIN32 src/main_menu.cpp src/menu_timings.cpp src/title_scene.cpp src/fighter_select.cpp src/select_idle.cpp)
     target_link_libraries(skullgirls-main-menu PRIVATE skullgirls_sprite_assets shell32 gdi32 user32 gdiplus)
 endif()

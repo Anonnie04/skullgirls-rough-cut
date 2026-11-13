@@ -5,9 +5,9 @@ Windows build. The project loads assets at runtime from a local installation
 of the game.
 
 The Windows preview covers the title screen, main menu, Training Options,
-and team and fighter selection for both players. It stops after team
-selection. Menu animation and layout are still being reconstructed. The
-command-line tools inspect GFS archives and export sprite layers and frames.
+character and palette selection, stage selection, and a playable Class Notes
+training room for Filia. The command-line tools inspect GFS archives and
+export sprite layers and frames.
 
 ## Build and run the preview
 
@@ -23,6 +23,15 @@ cmake --build build --config Release
 Press a key at the title screen. Use the arrow keys to navigate, Z or A to
 accept, and X or S to go back. Open Training, then Training Room, to reach
 Training Options and Character Select.
+
+Select Filia for both players and choose Class Notes to try two-player Training.
+Player 1 uses the arrow keys to move, Z/X/C for punches, and A/S/D for kicks.
+Player 2 uses J/L to walk, K to crouch, I to jump, F/G/H for punches, and V/B/N
+for kicks. Double-tap a direction to dash. R resets both fighters.
+
+Training includes standing, crouching, and aerial normals, hitbox overlap,
+hit stop, and basic hurt reactions. Reaction selection and recovery timing
+still need an in-game comparison. Launches and knockdowns are pending.
 
 This repository contains the reconstruction source and research notes.
 Game binaries, assets, and generated decompiler output are kept local.
@@ -48,6 +57,81 @@ across 71 installed GFS archives. It also rejected truncated indexes and a
 data offset that overlapped the header.
 
 ## Sprite RLE decoder
+
+### Combat frame research
+
+Filia's `characters/filia.foit` in `characters-foits.gfs` contains the
+debug names `s.Jab` and `s.Jab_RapidFire` at offsets `0x1c681c` and
+`0x1c6822` within the asset on build 26588330. The debug names alone
+do not identify the move's frame indices.
+
+The move loader calls `FUN_0044df90` for each animation. That routine
+reads a 16-bit frame count and three 16-bit sprite references per
+frame. A zero reference is absent and a nonzero reference is one-based.
+`FUN_0044e300` reads the rest of each frame record. Bit 0 of its first
+flags byte selects an explicit 16-bit duration. When the bit is clear,
+the loader stores one tick. `FUN_00499980` decrements that duration and
+loads the next frame when the counter reaches zero.
+
+The training overlay uses `FUN_0049e350` to put boxes in world
+coordinates. It draws the first stored box group in red. In the installed
+executable, the rectangle path in `FUN_0049e470` fetches group 0 at
+`0049e953` and normally fetches group 1 from the other fighter at
+`0049e9c5`. The preceding branch can switch the second lookup to
+group 0. The four signed comparisons at `0049e9ed` through
+`0049ea2f` reject separated rectangles. Equal edges pass the
+geometry check. On the rectangle path, the engine intersects each
+overlapping pair, computes its integer midpoint, and accumulates those
+midpoints as floats weighted by the overlap area clamped to at least
+one (`0049ea39` through `0049ebc0`).
+
+The caller `FUN_005899f0` rejects self-pairs. For modes other than 2,
+it also rejects ordered pairs already in the list passed to it. It
+calls `FUN_0049e470` and returns success only if that routine succeeds
+and its output flag is clear. The normal mode-1 call and the
+subsequent call to `FUN_00589eb0` are visible near line 268468 of the
+decompilation. One successful return sets the output flag at
+`0049f3d4` and sets bit 6 in the initiating entity's byte at
+`+0x364`. That branch checks the same bit at `0049f31e` and rejects
+a repeat. The outer caller suppresses its normal hit-success return
+when the output flag is set. This establishes a distinct contact
+outcome even though its full state semantics remain unresolved.
+
+After the final animation frame, the update switches to the successor
+move referenced by the current move record (`00499980`, near line
+70540).
+
+#### Filia standing light punch
+
+The move table has 529 records in the installed Filia FOIT. The first
+record starts at `0x7bf20`. The debug-name list at the end of this
+file has 533 entries. For the jab, the art independently identifies
+move 97 at `0xe780e` as `s.Jab` and move 98 at `0xeb136` as
+`s.Jab_RapidFire`. All six normal jab poses in the Digital Art
+Compendium match the six distinct sprite references of move 97.
+The trailing debug list indices alone would have given the wrong move.
+
+The table below records the second of the three sprite references
+and the stored duration in ticks. Sprite references are one-based.
+Zero means the record has no sprite in that slot. These are serialized
+records, including script-only records, so summing them does not
+establish the live startup or recovery time.
+
+| Move | Sprite reference and duration, in order |
+| --- | --- |
+| Standing jab | 0×1, 198×1, 0×1, 198×1, 0×1, 198×1, 199×2, 200×1, 200×2, 0×1, 200×3, 201×3, 202×4, 0×1, 203×4, 0×1 |
+| Rapid-fire jab | 0×1, 204×2, 205×3, 206×1, 206×2, 206×3, 207×4, 201×3, 202×3, 0×1, 203×3, 0×1 |
+
+Both move records name move 20 as their default successor. The first
+record with sprite 200 or 206 carries the corresponding hit descriptor
+at `0xe79a0` or `0xeb232`. The normal jab stores 300 and the rapid-fire
+jab stores 200 in the damage input at descriptor offset `+0x0c`.
+The engine passes that value to `FUN_0049dd80` before applying further
+scaling. Both descriptors store 7 at `+0x10`, which the normal contact
+branch passes to `FUN_004a3470` for the attacker and defender under
+its respective conditions. This sets the counter at entity offset
+`+0xd0`. The live script branches and stun calculations still need
+verification.
 
 The `skullgirls_sprite` C++17 library decodes one compressed sprite channel.
 It follows the RLE implementation in

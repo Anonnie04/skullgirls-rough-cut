@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <stdexcept>
 #include <utility>
 
@@ -30,6 +31,14 @@ public:
         for (unsigned i = 0; i < size; ++i) {
             value |= std::uint32_t(bytes_[start + i]) << (8 * i);
         }
+        return value;
+    }
+
+    std::int32_t signed_word()
+    {
+        const auto bits = number(4);
+        std::int32_t value;
+        std::memcpy(&value, &bits, sizeof(value));
         return value;
     }
 
@@ -85,6 +94,21 @@ SpriteLayer read_layer(Reader& reader, const SpriteBytes& foit, bool legacy)
 
 }
 
+WorldBox foit_world_box(const FoitBox& box, std::int32_t x, std::int32_t y, bool facing_right)
+{
+    // FUN_0049e350, before the optional character scaling in FUN_004a1280.
+    const std::int64_t world_x = x, world_y = y;
+    return {world_y - box[0], world_y - box[1],
+            facing_right ? world_x + box[2] : world_x - box[3],
+            facing_right ? world_x + box[3] : world_x - box[2]};
+}
+
+bool foit_boxes_overlap(const WorldBox& a, const WorldBox& b)
+{
+    // FUN_0049e470 at 0049e9ed uses strict rejection, so edge contact counts.
+    return a[2] <= b[3] && b[2] <= a[3] && a[0] >= b[1] && b[0] >= a[1];
+}
+
 std::vector<SpriteFrame> read_foit_frames(const SpriteBytes& foit, std::size_t main_art_size)
 {
     const bool legacy = !is_versioned_foit(foit);
@@ -129,8 +153,8 @@ std::vector<SpriteFrame> read_foit_frames(const SpriteBytes& foit, std::size_t m
 
             std::vector<SpriteFrame> frames;
             for (std::uint32_t i = 0; i < count; ++i) {
-                reader.take(8);
                 SpriteFrame frame{};
+                frame.origin = {reader.signed_word(), reader.signed_word()};
                 frame.art_bank = static_cast<std::uint8_t>(reader.number(1));
                 reader.take(reader.number(1) * 12);
                 const auto layers = reader.number(1);
@@ -139,9 +163,14 @@ std::vector<SpriteFrame> read_foit_frames(const SpriteBytes& foit, std::size_t m
                         frame.layers[slot] = read_layer(reader, foit, legacy);
                     }
                 }
-                reader.take(40);
-                for (int group = 0; group < 3; ++group) {
-                    reader.take(reader.number(2) * 16);
+                frame.primary_layer_offset = {reader.signed_word(), reader.signed_word()};
+                reader.take(32);
+                for (auto& group : frame.box_groups) {
+                    const auto boxes = reader.number(2);
+                    for (std::uint32_t j = 0; j < boxes; ++j) {
+                        group.push_back({reader.signed_word(), reader.signed_word(),
+                                         reader.signed_word(), reader.signed_word()});
+                    }
                 }
                 frames.push_back(std::move(frame));
             }
