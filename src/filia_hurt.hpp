@@ -96,4 +96,17 @@ constexpr NormalFrame filia_back_down[] = {{744, 2}, {745, 2}, {735, 4}, {736, 4
 constexpr NormalFrame filia_front_fall[] = {{757, 3}, {758, 3}, {759, 3}, {760, 3}, {761, 3}};
 constexpr NormalFrame filia_front_down[] = {{752, 5}, {753, 2}, {739, 4}, {740, 4}, {741, 40}};
 
+// FOIT 252/254 settle into the face-up pose before 412. FOIT 266/267
+// settle into the face-down pose before 414. Zero sprite records hold the pose.
+constexpr NormalFrame filia_back_wakeup[] = {
+    {746, 4}, {747, 2}, {748, 3}, {749, 2}, {750, 3}, {751, 6},
+    {933, 3}, {934, 3}, {935, 3}, {936, 3}, {937, 4}, {938, 7},
+    {939, 3}, {940, 4}, {941, 5}, {942, 4}, {943, 4},
+};
+constexpr NormalFrame filia_front_wakeup[] = {
+    {754, 3}, {755, 2}, {756, 15},
+    {944, 3}, {945, 3}, {946, 3}, {947, 3}, {948, 5},
+    {949, 7}, {950, 3}, {951, 5}, {952, 5},
+};
+
 }

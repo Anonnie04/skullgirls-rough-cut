@@ -758,7 +758,7 @@ struct Menu {
         skullgirls::HeavyReaction::Type heavy_reaction = skullgirls::HeavyReaction::none;
         float recoil_x = 0;
         unsigned recoil_ticks = 0;
-        bool recoil_landed = false;
+        bool recoil_landed = false, waking_up = false;
         int striking_normal = -1;
         bool throw_input = false;
         bool throw_facing_right = true;
@@ -775,6 +775,7 @@ struct Menu {
             recoil_x = facing_right ? -reaction.horizontal : reaction.horizontal;
             recoil_ticks = 0;
             recoil_landed = false;
+            waking_up = false;
             if (heavy_reaction != skullgirls::HeavyReaction::none)
                 jump_velocity = reaction.upward;
             const bool low = hit.height_mask == 2;
@@ -827,12 +828,22 @@ struct Menu {
                     }
                     return recoil_landed ? 0u : frames[std::size(frames) - 1].sprite;
                 };
-                movement_sprite = recoil_landed ?
-                    (front ? pose(skullgirls::filia_front_down) : pose(skullgirls::filia_back_down)) :
-                    (front ? pose(skullgirls::filia_front_fall) : pose(skullgirls::filia_knockback));
+                if (!recoil_landed) {
+                    movement_sprite = front ? pose(skullgirls::filia_front_fall) : pose(skullgirls::filia_knockback);
+                    return;
+                }
+                if (!waking_up) {
+                    movement_sprite = front ? pose(skullgirls::filia_front_down) : pose(skullgirls::filia_back_down);
+                    if (movement_sprite) return;
+                    waking_up = true;
+                    recoil_ticks = 0;
+                }
+                movement_sprite = front ? pose(skullgirls::filia_front_wakeup) : pose(skullgirls::filia_back_wakeup);
                 if (!movement_sprite) {
                     heavy_reaction = Reaction::none;
                     hurt_group = -1;
+                    crouching = rising = false;
+                    stance_tick = 0;
                 }
                 return;
             }
@@ -1291,7 +1302,7 @@ struct Menu {
     std::array<PracticeFighter, 2> practice_players;
     std::array<float, 2> practice_starts{};
     float practice_width = 0, practice_height = 0, practice_floor = 0;
-    std::array<skullgirls::SelectFrame, 829> movement_frames;
+    std::array<skullgirls::SelectFrame, 953> movement_frames;
     std::vector<skullgirls::SpriteFrame> combat_metadata;
     std::map<unsigned, skullgirls::SelectFrame> jab_overlays;
     std::array<unsigned, std::size(skullgirls::filia_normals)> multi_hit_end{};
@@ -1309,7 +1320,8 @@ struct Menu {
             if ((ref >= 50 && ref < 59) || (ref >= 122 && ref < 130) ||
                 (ref >= 136 && ref < 142) || (ref >= 154 && ref < 166) ||
                 (ref >= 181 && ref < 190) ||
-                (ref >= 424 && ref < 466) || ref == 509 || (ref >= 543 && ref < 702) || ref == 729 || (ref >= 773 && ref < 828)) continue;
+                (ref >= 424 && ref < 466) || ref == 509 || (ref >= 543 && ref < 702) || ref == 729 ||
+                (ref >= 773 && ref < 828) || (ref >= 829 && ref < 933)) continue;
             const auto& source = frames.at(ref - 1);
             const auto& layer = source.layers[0].value();
             auto& frame = decoded[ref];
@@ -1653,7 +1665,7 @@ struct Menu {
         }
         const auto draw_practice_idle = [&](int side, float x, bool mirror, bool shadow) {
             const auto fighter = fighters[side].front();
-            const auto palette = match_palette(side, 0);
+            const auto palette = locked_colors[side].front();
             if (std::string_view(roster[fighter]) != "filia") {
                 draw_idle(dc, fighter, palette, x, floor, mirror, shadow);
                 return;
@@ -1765,20 +1777,23 @@ struct Menu {
     std::array<std::vector<Palette>, roster.size()> palettes;
     std::array<std::vector<skullgirls::SelectFrame>, roster.size()> idle_frames;
     std::array<std::vector<std::size_t>, 2> locked_colors;
-    std::size_t match_palette(std::size_t side, std::size_t slot) const {
-        const auto selected = locked_colors[side][slot];
-        const auto fighter = fighters[side][slot];
-        const auto& colors = palettes[fighter];
-        // The Filia mirror match substitutes palette 2 on Player 2's default pick.
-        if (side != 1 || std::string_view(roster[fighter]) != "filia" ||
-            colors[selected].number != 1) return selected;
-        for (std::size_t other = 0; other < fighters[0].size(); ++other) {
-            if (fighters[0][other] != fighter || locked_colors[0][other] != selected) continue;
-            const auto alternate = std::find_if(colors.begin(), colors.end(),
-                [](const Palette& color) { return color.number == 2; });
-            if (alternate != colors.end()) return static_cast<std::size_t>(alternate - colors.begin());
+    std::size_t available_palette(int fighter, std::size_t requested) const {
+        // FUN_004506f0 advances through palette numbers, wrapping after the last one.
+        const auto count = palettes[fighter].size();
+        for (std::size_t offset = 0; offset < count; ++offset) {
+            const auto candidate = (requested + offset) % count;
+            bool taken = false;
+            for (std::size_t side = 0; side < fighters.size() && !taken; ++side) {
+                for (std::size_t slot = 0; slot < fighters[side].size(); ++slot) {
+                    if (fighters[side][slot] == fighter && locked_colors[side][slot] == candidate) {
+                        taken = true;
+                        break;
+                    }
+                }
+            }
+            if (!taken) return candidate;
         }
-        return selected;
+        return requested;
     }
     std::chrono::steady_clock::time_point idle_start{};
     mutable std::map<std::tuple<int, std::size_t, std::size_t>, std::unique_ptr<Gdiplus::Bitmap>> idle_cache;
@@ -1829,8 +1844,8 @@ struct Menu {
             practice_bitmap_side[side] = side;
             const auto fighter = fighters[side].front();
             if (std::string_view(roster[fighter]) != "filia") continue;
-            const auto palette = match_palette(side, 0);
-            if (side == 1 && fighter == fighters[0].front() && palette == match_palette(0, 0)) {
+            const auto palette = locked_colors[side].front();
+            if (side == 1 && fighter == fighters[0].front() && palette == locked_colors[0].front()) {
                 practice_bitmap_side[side] = 0;
                 continue;
             }
@@ -1989,15 +2004,16 @@ struct Menu {
                     // The single-button masks map to palettes 1 through 6 in FUN_0044ea70.
                     const auto number = static_cast<unsigned>(attack - attack_keys.begin() + 1);
                     const auto& colors = palettes[fighter_cursor];
-                    const auto selected_color = std::find_if(colors.begin(), colors.end(),
-                        [number](const auto& color) { return color.number == number; });
-                    if (selected_color == colors.end()) return;
-                    palette_cursor = selected_color - colors.begin();
+                    const auto clamped = std::min(number, colors.back().number);
+                    const auto selected_color = std::lower_bound(colors.begin(), colors.end(), clamped,
+                        [](const Palette& color, unsigned value) { return color.number < value; });
+                    palette_cursor = static_cast<std::size_t>(selected_color - colors.begin());
                     nameplate(player, team.size(), fighter_cursor, false);
                 }
                 choosing_palette = false;
+                const auto color = available_palette(fighter_cursor, palette_cursor);
                 team.push_back(fighter_cursor);
-                locked_colors[player].push_back(palette_cursor);
+                locked_colors[player].push_back(color);
                 palette_cursor = 0;
                 if (int(team.size()) == team_size[player]) {
                     if (player == 0) {
@@ -2374,7 +2390,7 @@ struct Menu {
             if (showing_stage_select()) {
                 for (std::size_t slot = 0; slot < fighters[side].size(); ++slot) {
                     const auto& anchor = pedestal_layout.anchors[side][slot];
-                    draw_idle(dc, fighters[side][slot], match_palette(side, slot), anchor.x, anchor.y, side == 1);
+                    draw_idle(dc, fighters[side][slot], locked_colors[side][slot], anchor.x, anchor.y, side == 1);
                 }
                 continue;
             }
