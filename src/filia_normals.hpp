@@ -5,7 +5,7 @@ namespace skullgirls {
 struct NormalFrame { unsigned sprite, ticks; };
 
 // LP, MP, HP, LK, MK, HK for standing, crouching, and aerial normals.
-constexpr NormalFrame filia_normals[26][64] = {
+constexpr NormalFrame filia_normals[][64] = {
     { // FOIT move 97
         {0, 1}, {198, 1}, {0, 1}, {198, 1}, {0, 1}, {198, 1}, {199, 2}, {200, 1},
         {200, 2}, {0, 1}, {200, 3}, {201, 3}, {202, 4}, {0, 1}, {203, 4}, {0, 1},
@@ -138,9 +138,14 @@ constexpr NormalFrame filia_normals[26][64] = {
         {0, 1}, {467, 2}, {0, 1}, {467, 3}, {468, 5}, {469, 4}, {0, 1},
         {471, 3}, {482, 3}, {483, 3}, {484, 3}, {485, 2},
     },
+    { // Ringlet Spike (move 146)
+        {0, 1}, {466, 2}, {0, 1}, {466, 1}, {467, 3}, {468, 3}, {469, 3},
+        {470, 3}, {471, 3}, {0, 1}, {472, 3}, {473, 3}, {474, 3}, {475, 3},
+        {476, 3}, {477, 3}, {478, 3}, {479, 3}, {0, 1}, {480, 3}, {481, 3},
+        {482, 3}, {483, 3}, {484, 3}, {485, 3}, {486, 3},
+    },
 };
 
-constexpr int air_mp = 13;
 constexpr int rapid_stand_lp = 18;
 constexpr int rapid_crouch_lp = 19;
 constexpr int updo_light = 20;
@@ -159,6 +164,34 @@ constexpr unsigned updo_air_loop_end = 20;
 constexpr unsigned updo_air_loop_start = 15;
 constexpr int air_hairball = 24;
 constexpr int ringlet_psych = 25;
+constexpr int ringlet_spike = 26;
+// Quarter-circle enters 141/143/145 for two records. The half-circle
+// routes through 140/142/144 for one additional record first.
+constexpr unsigned ringlet_quarter_entry_ticks = 2;
+constexpr unsigned ringlet_half_entry_ticks = 3;
+constexpr unsigned ringlet_spawn_frame = 9;
+constexpr float ringlet_distance[] = {170, 470, 770};
+// Ringlet's child move at 0x1c1166 points into Filia's main sprite table.
+// The descriptor is armed on record 6 and cleared by the flag on record 16.
+// Shorten the cosmetic spin after record 16 so the dissolve ends with
+// Filia's recovery. The visible startup and hit records keep their FOIT timing.
+constexpr unsigned ringlet_spike_arm_frame = 6;
+constexpr unsigned ringlet_spike_clear_frame = 16;
+constexpr NormalFrame ringlet_spike_frames[] = {
+    {0, 1}, {1170, 4}, {0, 1}, {0, 1}, {0, 1}, {1171, 3}, {1172, 3},
+    {1173, 2}, {1174, 2}, {1175, 2}, {1173, 2}, {1174, 2}, {1175, 2},
+    {1173, 2}, {1174, 2}, {1175, 2}, {0, 1},
+    {1175, 1},
+    {1176, 3}, {1177, 3}, {1178, 3}, {1179, 3}, {1179, 1},
+};
+static_assert([] {
+    unsigned recovery = 0;
+    for (unsigned i = ringlet_spawn_frame; filia_normals[ringlet_spike][i].ticks; ++i)
+        recovery += filia_normals[ringlet_spike][i].ticks;
+    unsigned drill = 0;
+    for (const auto& frame : ringlet_spike_frames) drill += frame.ticks;
+    return recovery == drill;
+}(), "Ringlet Spike must disappear when the caster returns to idle");
 // Startup and loop each have the same record counts for ground and air.
 constexpr unsigned hairball_loop_frame = 6;
 constexpr unsigned hairball_end_frame = 11;
@@ -178,13 +211,12 @@ constexpr int filia_normal_followup(int current, int button, bool airborne, bool
     const int target = button + (airborne ? 12 : down ? 6 : 0);
     const bool current_air = current >= 12 && current < 18;
     if (current_air != airborne) return -1;
-    // Moves 97 and 104 have explicit repeat edges to the rapid-fire variants.
-    if (button == 0 && (current == 0 || current == 6))
-        return down ? rapid_crouch_lp : rapid_stand_lp;
-    // Moves 98 and 105 return to a regular jab on the next LP press.
-    if (button == 0 && (current == rapid_stand_lp || current == rapid_crouch_lp))
-        return target;
     return filia_normal_input_order[button] > filia_normal_chain_order[current] ? target : -1;
+}
+
+// Moves 97 and 104 open their rapid-fire whiff branch with FOIT bit 0.
+constexpr bool filia_rapid_jab_whiff(int move, unsigned frame) {
+    return (move == 0 && frame >= 11 && frame < 16) || (move == 6 && frame >= 6);
 }
 
 }

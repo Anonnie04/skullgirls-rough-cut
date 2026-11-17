@@ -27,7 +27,36 @@ Training Options and Character Select.
 Select Filia for both players and choose Class Notes to try two-player Training.
 Player 1 uses the arrow keys to move, A/S/D for punches, and Z/X/C for kicks.
 Player 2 uses J/L to walk, K to crouch, I to jump, V/B/N for punches, and F/G/H
-for kicks. Double-tap a direction to dash. R resets both fighters.
+for kicks. Double-tap a direction to dash. R resets both fighters. Press
+Enter to pause. Use the arrow keys and Enter to select Resume Game or
+another pause menu option.
+
+Open Training Options from the pause menu to change slow motion, attack
+data, hitboxes, the hitstun bar, grid, input display, starting life, life
+behavior, and meter level. Use Left and Right to change a value, then
+X or S to go back. The input display defaults to Off.
+
+The same menu controls dummy actions, CPU difficulty, blocking, pushblock,
+throw tech, forced counter hits, cross-up notices, and K.O. behavior.
+F6 saves a practice state and F7 restores it. F8 starts or stops recording
+Player 2's inputs into the selected slot, and F9 toggles playback.
+Backspace follows the Back Button setting. In dummy mode, an empty slot
+arms recording on the first press and begins recording on the second.
+Shift+Backspace clears the selected dummy slot or overwrites a save,
+depending on the Back Button setting.
+
+Training first-hit conditions use the original 25-tick contact timer
+in `FUN_0059f960`. Pushblock requests use the hitstop gates in
+`FUN_005a1170`, including its 15 percent random check. Reversal playback
+primes the command history through the first recorded button as in
+`FUN_0057cb60`. The preview uses its own CPU policy, simplified
+blockstun and pushback, and a counter-hit notice while the full
+counter-hit effects remain unverified.
+
+Use forward, down, down-forward plus punch for Updo. Use down,
+down-forward, forward plus punch for Ringlet Spike. Half-circle forward
+also works for Ringlet Spike. Light, medium, and heavy punch place the spike
+near, at midrange, and far away. Directions are relative to Filia's facing.
 
 Training includes standing, crouching, and aerial normals, hitbox overlap,
 hit stop, and basic hurt reactions. Reaction selection and recovery timing

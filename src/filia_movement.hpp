@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 
 namespace skullgirls {
 
@@ -53,6 +54,30 @@ constexpr std::array dash_backward{
     MovementFrame{110, 2, -10}, MovementFrame{111, 2, -10}, MovementFrame{109, 2, -10},
     MovementFrame{112, 3, -6}, MovementFrame{112, 3, -2}};
 
+// The held forward dash continues from move 36 into 37, then loops 38.
+// Releasing forward in 37/38 enters 39 with the previous pose held for one tick.
+constexpr std::array dash_forward_extend{
+    MovementFrame{0, 2, 14}, MovementFrame{98, 4, 14}};
+constexpr std::array dash_forward_loop{
+    MovementFrame{99, 5, 14}, MovementFrame{100, 4, 14}, MovementFrame{101, 2, 14},
+    MovementFrame{102, 4, 14}, MovementFrame{103, 5, 14}, MovementFrame{104, 4, 14},
+    MovementFrame{105, 2, 14}, MovementFrame{106, 4, 14}};
+constexpr std::array dash_forward_stop{
+    MovementFrame{0, 1, 14}, MovementFrame{94, 8, 14}, MovementFrame{93, 4, 14}};
+
+// FOIT 24/25 (standing/crouching turn) and 31 (backwalk stop).
+constexpr std::array<unsigned, 15> stand_turn{
+    0, 50, 50, 50, 50, 51, 51, 51, 51, 52, 52, 52, 53, 53, 53};
+constexpr std::array<unsigned, 16> crouch_turn{
+    0, 54, 54, 54, 55, 55, 55, 56, 56, 56, 57, 57, 57, 58, 58, 58};
+constexpr std::array<unsigned, 9> backwalk_stop{0, 0, 0, 72, 72, 72, 71, 71, 71};
+
+// Super jump 55 and air jump 56/57 share ascent 65-70 and descent 74-76/83-85.
+constexpr std::array<unsigned, 5> air_jump_start{0, 0, 127, 128, 129};
+constexpr std::array<unsigned, 10> jump_descent{0, 0, 1, 1, 1, 2, 2, 3, 3, 3};
+constexpr std::array<unsigned, 11> fall_entry{0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 3};
+constexpr std::array<unsigned, 9> high_jump_fall_entry{0, 0, 0, 1, 1, 1, 2, 2, 2};
+
 // FUN_0046c3a0 direction codes, indexed by horizontal and vertical axes.
 constexpr unsigned filia_input_direction(int horizontal, int vertical) {
     constexpr unsigned directions[3][3] = {{3, 4, 5}, {2, 8, 6}, {1, 0, 7}};
@@ -61,6 +86,23 @@ constexpr unsigned filia_input_direction(int horizontal, int vertical) {
 
 using FiliaDashHistory = std::array<unsigned, 28>;
 constexpr unsigned filia_neutral = 8;
+
+// Ground jump dispatchers 44/45 check for the corresponding down direction
+// within 17 samples before routing to super jump 55.
+constexpr bool filia_super_jump(const FiliaDashHistory& history) {
+    const unsigned up = history.front();
+    if (up < 5 || up > 7) return false;
+    constexpr unsigned down[] = {3, 2, 1};
+    for (std::size_t age = 1; age < 17; ++age)
+        if (history[age] == down[up - 5]) return true;
+    return false;
+}
+
+// The FOIT transition to move 56 searches the current and preceding two samples.
+constexpr bool filia_air_jump(const FiliaDashHistory& history) {
+    const auto is_up = [](unsigned direction) { return direction >= 5 && direction <= 7; };
+    return is_up(history[0]) && !is_up(history[1]) && (history[1] == 2 || history[2] == 2);
+}
 
 // Direction-only subset of FUN_0046dd60 for the ground and air dash edges.
 inline bool filia_double_tap(const FiliaDashHistory& history, int horizontal, bool airborne) {
@@ -136,6 +178,19 @@ inline bool filia_quarter_circle(const FiliaDashHistory& history, bool right,
     return (history.front() == end && scan(1, 13, false, true)) ||
         scan(1, 16, false, false) ||
         (allow_rolling_input && scan(1, 28, true, false));
+}
+
+// FOIT moves 140/142/144 accept half-circle forward. Punch can share
+// the forward sample (25-tick window) or follow it (28-tick window).
+inline bool filia_ringlet_half_circle(const FiliaDashHistory& history, bool right) {
+    const std::array<unsigned, 5> motion = right ?
+        std::array<unsigned, 5>{0, 1, 2, 3, 4} : std::array<unsigned, 5>{4, 3, 2, 1, 0};
+    const auto scan = [&](std::size_t step, std::size_t limit) {
+        for (std::size_t age = 1; age < limit; ++age)
+            if (history[age] == motion[step] && ++step == motion.size()) return true;
+        return false;
+    };
+    return (history.front() == motion.front() && scan(1, 25)) || scan(0, history.size());
 }
 
 }
