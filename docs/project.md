@@ -12,12 +12,12 @@ export sprite layers and frames.
 ## Build and run the preview
 
 Use Visual Studio 2022 with Desktop development with C++ and CMake.
-Run from the repository root.
+Run from the repository root and substitute the path to your game installation.
 
 ```powershell
 cmake -S . -B build -G 'Visual Studio 17 2022' -A Win32
 cmake --build build --config Release
-.\build\Release\skullgirls-main-menu.exe 'D:\Steam\steamapps\common\Skullgirls\data02'
+.\build\Release\skullgirls-main-menu.exe 'C:\path\to\Skullgirls\data02'
 ```
 
 Press a key at the title screen. Use the arrow keys to navigate, Z or A to
@@ -45,28 +45,13 @@ arms recording on the first press and begins recording on the second.
 Shift+Backspace clears the selected dummy slot or overwrites a save,
 depending on the Back Button setting.
 
-Training first-hit conditions use the original 25-tick contact timer
-in `FUN_0059f960`. Pushblock requests use the hitstop gates in
-`FUN_005a1170`, including its 15 percent random check. Reversal playback
-primes the command history through the first recorded button as in
-`FUN_0057cb60`. The preview uses its own CPU policy, simplified
-blockstun and pushback, and a counter-hit notice while the full
-counter-hit effects remain unverified.
-
 Use forward, down, down-forward plus punch for Updo. Use down,
 down-forward, forward plus punch for Ringlet Spike. Half-circle forward
 also works for Ringlet Spike. Light, medium, and heavy punch place the spike
 near, at midrange, and far away. Directions are relative to Filia's facing.
 
-Training includes standing, crouching, and aerial normals, hitbox overlap,
-hit stop, and basic hurt reactions. Reaction selection and recovery timing
-still need an in-game comparison. Launches and knockdowns are pending.
-
-The original Windows renderer initializes Direct3D 9 and submits indexed
-triangles through its wrapper at `004de9f0`. The Class Notes preview uses
-Direct3D 9 vertex buffers, index buffers, and textures to draw its meshes.
-It reads the result back for the preview's GDI+ composition. The original
-shader programs and presentation path still need to be reconstructed.
+Training includes standing, crouching, and aerial attacks, hit and block
+effects, launch and knockdown reactions, and an animated health bar.
 
 This repository contains the reconstruction source and research notes.
 Game binaries, assets, and generated decompiler output are kept local.
@@ -79,12 +64,12 @@ The CMake project builds a C++17 GFS archive index library and a read-only
 size and alignment without loading the payload. The GFS header check follows
 `FUN_004e8370`. The table layout follows the local archive tools.
 
-Run from `D:\Steam\skullgirls-decomp` with Visual Studio 2022 installed.
+Run from the repository root with Visual Studio 2022 installed.
 
 ```powershell
 cmake -S . -B build -G 'Visual Studio 17 2022' -A Win32
 cmake --build build --config Release
-.\build\Release\skullgirls-gfs.exe 'D:\Steam\steamapps\common\Skullgirls\data02\characters-foits.gfs'
+.\build\Release\skullgirls-gfs.exe 'C:\path\to\Skullgirls\data02\characters-foits.gfs'
 ```
 
 The Win32 Release build matched an independent index reader entry-for-entry
@@ -169,8 +154,6 @@ its respective conditions. This sets the counter at entity offset
 verification.
 
 The `skullgirls_sprite` C++17 library decodes one compressed sprite channel.
-It follows the RLE implementation in
-`D:\Steam\ChatGPT\Skullgirls Sprite Extractor\decoder.py`.
 The caller supplies the expected decoded length. For the sampled FOIT images,
 this is 256 bytes per used tile. The standalone command accepts a file
 containing exactly one compressed channel.
@@ -206,10 +189,10 @@ FOIT metadata parsing and palette application remain separate work.
 decodes its art-bank layer, applies the character's default palette under
 neutral lighting, and writes a PAM image with RGBA pixels. Frame and layer
 indices are zero-based. Build the Win32 Release configuration as above, then
-run from `D:\Steam\skullgirls-decomp`.
+run from the repository root.
 
 ```powershell
-.\build\Release\skullgirls-sprite.exe 'D:\Steam\steamapps\common\Skullgirls\data02' filia 0 0 filia.pam
+.\build\Release\skullgirls-sprite.exe 'C:\path\to\Skullgirls\data02' filia 0 0 filia.pam
 ```
 
 The FOIT reader supports versioned files with version 3 or 9 and uses the
@@ -226,7 +209,7 @@ When both layers are present they must have matching dimensions. An empty
 frame returns an error. Numeric slots still export individual layers.
 
 ```powershell
-.\build\Release\skullgirls-sprite.exe 'D:\Steam\steamapps\common\Skullgirls\data02' filia 0 frame filia-frame.pam
+.\build\Release\skullgirls-sprite.exe 'C:\path\to\Skullgirls\data02' filia 0 frame filia-frame.pam
 ```
 
 On the installed data02 archives, the Win32 Release output matched Sprite
@@ -240,7 +223,7 @@ detects the embedded palette from the FOIT metadata and reconstructs its
 16-step color gradients.
 
 ```powershell
-.\build\Release\skullgirls-sprite.exe 'D:\Steam\steamapps\common\Skullgirls 2013-08-01\data01' filia 0 0 filia-legacy.pam
+.\build\Release\skullgirls-sprite.exe 'C:\path\to\legacy-Skullgirls\data01' filia 0 0 filia-legacy.pam
 ```
 
 The Win32 Release build matched the Python reference on one decodable
@@ -257,5 +240,5 @@ manually. Playback advances every 125 ms and wraps. Empty layers and
 entries the decoder cannot render are skipped.
 
 ```powershell
-.\build\Release\skullgirls-viewer.exe --filia 'D:\Steam\steamapps\common\Skullgirls\data02'
+.\build\Release\skullgirls-viewer.exe --filia 'C:\path\to\Skullgirls\data02'
 ```
