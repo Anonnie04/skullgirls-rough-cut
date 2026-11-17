@@ -2,6 +2,8 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <gdiplus.h>
+#include <d3d9.h>
+#include <wrl/client.h>
 
 #include "sprite_asset.hpp"
 #include "menu_timings.hpp"
@@ -23,6 +25,7 @@
 #include <sstream>
 #include <random>
 #include <memory>
+#include <future>
 #include <map>
 #include <string>
 #include <vector>
@@ -66,10 +69,8 @@ struct Texture {
         info.bmiHeader.biPlanes = 1;
         info.bmiHeader.biBitCount = 32;
         void* memory = nullptr;
-        dc = CreateCompatibleDC(nullptr);
-        bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &memory, nullptr, 0);
-        if (!dc || !bitmap) throw std::runtime_error("Cannot allocate menu texture");
-        previous = SelectObject(dc, bitmap);
+        bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &memory, nullptr, 0);
+        if (!bitmap) throw std::runtime_error("Cannot allocate menu texture");
         auto* pixels = static_cast<unsigned*>(memory);
         std::size_t pos = 128;
         for (unsigned y = 0; y < h; y += 4) {
@@ -136,9 +137,242 @@ struct Texture {
     }
 };
 
+struct LoadingAnimation {
+    struct Frame {
+        unsigned first, count, ticks;
+        float origin_x, origin_y;
+    };
+    struct Tile { unsigned x, y, u, v; };
+    struct Image {
+        float x, y;
+        std::vector<unsigned> pixels;
+        std::unique_ptr<Gdiplus::Bitmap> bitmap;
+    };
+    std::vector<Frame> frames;
+    std::vector<Image> images;
+    unsigned ticks = 0;
+
+    void load(const std::filesystem::path& archive) {
+        using skullgirls::read_sprite_asset;
+        const auto bytes = read_sprite_asset(archive, "sprites/loading_en.spr.msb");
+        skullgirls::StageReader reader(bytes);
+        if (reader.string() != "2.0" || reader.string() != "loading_en")
+            throw std::runtime_error("Unsupported loading sprite");
+        reader.skip(4);
+        if (reader.string() != "unigned char tile_x, tile_y, tile_u, tile_v;" || reader.word(8) != 4)
+            throw std::runtime_error("Unsupported loading tile format");
+        const auto tile_count = reader.word(8);
+        const auto frame_count = reader.word(8);
+        const auto sequence_count = reader.word(8);
+        if (tile_count > bytes.size() / 4 || frame_count > bytes.size() / 20 ||
+            sequence_count > bytes.size() / 24 || reader.word(8) != 16 || reader.word(8) != 16)
+            throw std::runtime_error("Invalid loading sprite layout");
+        Texture atlas;
+        atlas.load(read_sprite_asset(archive, "sprites/loading_en.dds"));
+        std::vector<Tile> tiles;
+        tiles.reserve(static_cast<std::size_t>(tile_count));
+        for (std::uint64_t i = 0; i < tile_count; ++i) {
+            const Tile tile{static_cast<unsigned>(reader.word(1)), static_cast<unsigned>(reader.word(1)),
+                            static_cast<unsigned>(reader.word(1)), static_cast<unsigned>(reader.word(1))};
+            if ((tile.u + 1) * 16 > unsigned(atlas.width) || (tile.v + 1) * 16 > unsigned(atlas.height))
+                throw std::runtime_error("Loading tile outside atlas");
+            tiles.push_back(tile);
+        }
+        std::vector<Frame> all_frames;
+        for (std::uint64_t i = 0; i < frame_count; ++i) {
+            const Frame frame{static_cast<unsigned>(reader.word(4)), static_cast<unsigned>(reader.word(4)),
+                              static_cast<unsigned>(reader.word(4)), reader.real(), reader.real()};
+            if (frame.first > tile_count || frame.count > tile_count - frame.first ||
+                !frame.ticks || frame.ticks > 65535 || !std::isfinite(frame.origin_x) ||
+                !std::isfinite(frame.origin_y))
+                throw std::runtime_error("Invalid loading sprite frame");
+            all_frames.push_back(frame);
+        }
+        if (!sequence_count || reader.string() != "bomb_en")
+            throw std::runtime_error("Missing bomb_en loading animation");
+        const auto count = reader.word(8), loop_end = reader.word(8);
+        if (!count || count > frame_count || loop_end != count - 1)
+            throw std::runtime_error("Invalid loading animation sequence");
+        frames.assign(all_frames.begin(), all_frames.begin() + count);
+        DIBSECTION dib{};
+        if (!GetObjectW(atlas.bitmap, sizeof(dib), &dib))
+            throw std::runtime_error("Cannot read loading atlas pixels");
+        const auto* atlas_pixels = static_cast<const unsigned*>(dib.dsBm.bmBits);
+        images.reserve(frames.size());
+        for (const auto& frame : frames) {
+            ticks += frame.ticks;
+            unsigned width = 16, height = 16;
+            for (unsigned i = frame.first; i < frame.first + frame.count; ++i) {
+                width = std::max(width, (tiles[i].x + 1) * 16);
+                height = std::max(height, (tiles[i].y + 1) * 16);
+            }
+            Image image{640 - frame.origin_x, 360 - frame.origin_y};
+            image.pixels.resize(width * height);
+            for (unsigned i = frame.first; i < frame.first + frame.count; ++i) {
+                const auto& tile = tiles[i];
+                for (unsigned y = 0; y < 16; ++y)
+                    std::copy_n(atlas_pixels + (tile.v * 16 + y) * atlas.width + tile.u * 16, 16,
+                                image.pixels.data() + (tile.y * 16 + y) * width + tile.x * 16);
+            }
+            image.bitmap = std::make_unique<Gdiplus::Bitmap>(width, height, width * 4,
+                PixelFormat32bppPARGB, reinterpret_cast<BYTE*>(image.pixels.data()));
+            if (image.bitmap->GetLastStatus() != Gdiplus::Ok)
+                throw std::runtime_error("Cannot prepare loading animation bitmap");
+            images.push_back(std::move(image));
+        }
+    }
+
+    void draw(Gdiplus::Graphics& dc, std::uint64_t tick) const {
+        dc.Clear(Gdiplus::Color::Black);
+        auto remaining = tick % ticks;
+        std::size_t index = 0;
+        while (remaining >= frames[index].ticks) remaining -= frames[index++].ticks;
+        const auto& image = images[index];
+        dc.DrawImage(image.bitmap.get(), image.x, image.y,
+                     static_cast<float>(image.bitmap->GetWidth()), static_cast<float>(image.bitmap->GetHeight()));
+    }
+};
+
+using Microsoft::WRL::ComPtr;
+
+struct StageGpu {
+    struct Vertex { float x, y, z, w; DWORD color; float u, v; };
+    struct Mesh {
+        ComPtr<IDirect3DVertexBuffer9> vertices;
+        ComPtr<IDirect3DIndexBuffer9> indices;
+        ComPtr<IDirect3DTexture9> texture;
+    };
+    ComPtr<IDirect3DDevice9> device;
+    ComPtr<IDirect3DSurface9> target, staging;
+    std::vector<Mesh> buffers;
+
+    static void check(HRESULT result) {
+        if (FAILED(result)) throw std::runtime_error("Direct3D stage operation failed");
+    }
+
+    StageGpu(HWND window, int width, int height, const std::vector<skullgirls::StageMesh>& meshes,
+             const std::map<std::string, std::unique_ptr<Texture>>& textures) {
+        ComPtr<IDirect3D9> d3d;
+        d3d.Attach(Direct3DCreate9(D3D_SDK_VERSION));
+        if (!d3d) throw std::runtime_error("Direct3D 9 is unavailable");
+        D3DPRESENT_PARAMETERS params{};
+        params.Windowed = TRUE;
+        params.SwapEffect = D3DSWAPEFFECT_DISCARD;
+        params.BackBufferWidth = width;
+        params.BackBufferHeight = height;
+        params.BackBufferFormat = D3DFMT_X8R8G8B8;
+        params.EnableAutoDepthStencil = TRUE;
+        params.AutoDepthStencilFormat = D3DFMT_D24S8;
+        params.hDeviceWindow = window;
+        check(d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window,
+            D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE, &params, &device));
+        check(device->GetRenderTarget(0, &target));
+        check(device->CreateOffscreenPlainSurface(width, height, D3DFMT_X8R8G8B8,
+            D3DPOOL_SYSTEMMEM, &staging, nullptr));
+
+        std::map<std::string, ComPtr<IDirect3DTexture9>> uploaded;
+        for (const auto& mesh : meshes) {
+            Mesh buffer;
+            const auto& source = *textures.at(mesh.material);
+            auto& texture = uploaded[mesh.material];
+            if (!texture) {
+                check(device->CreateTexture(source.width, source.height, 1, 0, D3DFMT_A8R8G8B8,
+                    D3DPOOL_MANAGED, &texture, nullptr));
+                DIBSECTION dib{};
+                if (!GetObjectW(source.bitmap, sizeof(dib), &dib))
+                    throw std::runtime_error("Cannot read stage texture pixels");
+                D3DLOCKED_RECT lock{};
+                check(texture->LockRect(0, &lock, nullptr, 0));
+                for (int y = 0; y < source.height; ++y)
+                    std::memcpy(static_cast<BYTE*>(lock.pBits) + y * lock.Pitch,
+                        static_cast<const BYTE*>(dib.dsBm.bmBits) + y * dib.dsBm.bmWidthBytes,
+                        source.width * 4);
+                check(texture->UnlockRect(0));
+            }
+            buffer.texture = texture;
+            check(device->CreateVertexBuffer(static_cast<UINT>(mesh.vertices.size() * sizeof(Vertex)),
+                D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1,
+                D3DPOOL_DEFAULT, &buffer.vertices, nullptr));
+            check(device->CreateIndexBuffer(static_cast<UINT>(mesh.indices.size() * sizeof(unsigned)),
+                D3DUSAGE_WRITEONLY, D3DFMT_INDEX32, D3DPOOL_MANAGED, &buffer.indices, nullptr));
+            void* index_data = nullptr;
+            check(buffer.indices->Lock(0, 0, &index_data, 0));
+            std::memcpy(index_data, mesh.indices.data(), mesh.indices.size() * sizeof(unsigned));
+            check(buffer.indices->Unlock());
+            buffers.push_back(std::move(buffer));
+        }
+    }
+
+    void draw(int width, int height, const std::vector<skullgirls::StageMesh>& meshes,
+              const std::vector<std::array<float, 2>>& uv, float center, float view_height,
+              float bottom, float distance, float focal, float near_clip, float far_clip,
+              std::vector<unsigned>& color) {
+        check(device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xffaeb9c7, 1.0f, 0));
+        check(device->BeginScene());
+        device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+        device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        device->SetRenderState(D3DRS_ZENABLE, TRUE);
+        device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESS);
+        device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
+        device->SetRenderState(D3DRS_ALPHAREF, 255);
+        device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);
+        device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+        device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+        device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+        device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        for (std::size_t i = 0; i < meshes.size(); ++i) {
+            const auto& mesh = meshes[i];
+            const auto& buffer = buffers[i];
+            void* data = nullptr;
+            check(buffer.vertices->Lock(0, 0, &data, D3DLOCK_DISCARD));
+            auto* vertex = static_cast<Vertex*>(data);
+            for (const auto& v : mesh.vertices) {
+                const float z = distance - v.z;
+                const float q = 1.0f / std::max(z, near_clip);
+                const unsigned a = v.rgba & 255;
+                const auto premultiply = [a](unsigned c) { return (c & 255) * a / 255; };
+                *vertex++ = {width * 0.5f + (v.x - center) * focal * q - 0.5f,
+                    height * 0.5f - (v.y - bottom - view_height * 0.5f) * focal * q - 0.5f,
+                    (z - near_clip) / (far_clip - near_clip), q,
+                    D3DCOLOR_ARGB(a, premultiply(v.rgba >> 24), premultiply(v.rgba >> 16),
+                                  premultiply(v.rgba >> 8)), v.u + uv[i][0], 1.0f - v.v - uv[i][1]};
+            }
+            check(buffer.vertices->Unlock());
+            device->SetTexture(0, buffer.texture.Get());
+            const auto filter = mesh.uv_offsets.empty() ? D3DTEXF_POINT : D3DTEXF_LINEAR;
+            device->SetSamplerState(0, D3DSAMP_MINFILTER, filter);
+            device->SetSamplerState(0, D3DSAMP_MAGFILTER, filter);
+            device->SetStreamSource(0, buffer.vertices.Get(), 0, sizeof(Vertex));
+            device->SetIndices(buffer.indices.Get());
+            for (bool opaque : {true, false}) {
+                device->SetRenderState(D3DRS_ALPHAFUNC, opaque ? D3DCMP_EQUAL : D3DCMP_LESS);
+                device->SetRenderState(D3DRS_ALPHABLENDENABLE, !opaque);
+                device->SetRenderState(D3DRS_ZWRITEENABLE, opaque);
+                check(device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
+                    static_cast<UINT>(mesh.vertices.size()), 0, static_cast<UINT>(mesh.indices.size() / 3)));
+            }
+        }
+        check(device->EndScene());
+        check(device->GetRenderTargetData(target.Get(), staging.Get()));
+        D3DLOCKED_RECT lock{};
+        check(staging->LockRect(&lock, nullptr, D3DLOCK_READONLY));
+        for (int y = 0; y < height; ++y) {
+            const auto* row = reinterpret_cast<const unsigned*>(static_cast<const BYTE*>(lock.pBits) + y * lock.Pitch);
+            for (int x = 0; x < width; ++x) color[y * width + x] = row[x] | 0xff000000;
+        }
+        check(staging->UnlockRect());
+    }
+};
+
 struct PracticeScene {
     static constexpr int width = 960, height = 540;
+    struct ProjectedVertex { float x, y, q, u, v; unsigned rgba; };
     std::vector<skullgirls::StageMesh> meshes;
+    std::vector<ProjectedVertex> points;
+    std::vector<std::array<float, 2>> drawn_uv, current_uv;
+    std::array<float, 4> drawn_camera{};
+    bool has_drawn = false;
+    std::unique_ptr<StageGpu> gpu;
     std::map<std::string, std::unique_ptr<Texture>> textures;
     std::vector<unsigned> color = std::vector<unsigned>(width * height);
     std::vector<float> depth = std::vector<float>(width * height);
@@ -161,31 +395,68 @@ struct PracticeScene {
         // Draw the classroom before its translucent fog and character layers.
         std::stable_partition(meshes.begin(), meshes.end(),
             [](const auto& mesh) { return mesh.material == "class_notes_3d"; });
+        for (const auto& mesh : meshes)
+            if (mesh.vertices.size() > points.capacity()) points.reserve(mesh.vertices.size());
+        drawn_uv.resize(meshes.size());
+        current_uv.resize(meshes.size());
+    }
+
+    void initialize_gpu(HWND window) {
+        try {
+            gpu = std::make_unique<StageGpu>(window, width, height, meshes, textures);
+        } catch (const std::runtime_error&) {
+            OutputDebugStringW(L"Class Notes Direct3D initialization failed. Using software rendering.\n");
+        }
     }
 
     void draw(Gdiplus::Graphics& target, float center, float view_width, float view_height, float bottom,
               std::uint64_t tick) {
+        const std::array<float, 4> camera{center, view_width, view_height, bottom};
+        for (std::size_t i = 0; i < meshes.size(); ++i) {
+            const auto& mesh = meshes[i];
+            if (tick < mesh.intro_uv_offsets.size()) {
+                current_uv[i] = mesh.intro_uv_offsets[tick];
+            } else if (!mesh.uv_offsets.empty()) {
+                current_uv[i] = mesh.uv_offsets[(tick - mesh.intro_uv_offsets.size()) % mesh.uv_offsets.size()];
+            } else {
+                current_uv[i] = {};
+            }
+        }
+        if (!has_drawn || camera != drawn_camera || current_uv != drawn_uv) {
+            if (gpu) {
+                const float distance = view_width * 0.5f / std::tan(fov * 0.00872664626f);
+                try {
+                    gpu->draw(width, height, meshes, current_uv, center, view_height, bottom,
+                              distance, width * distance / view_width, near_clip, far_clip, color);
+                } catch (const std::runtime_error&) {
+                    gpu.reset();
+                    OutputDebugStringW(L"Class Notes Direct3D rendering failed. Using software rendering.\n");
+                }
+            }
+            if (!gpu) rasterize(center, view_width, view_height, bottom);
+            drawn_camera = camera;
+            drawn_uv.swap(current_uv);
+            has_drawn = true;
+        }
+        target.DrawImage(&image, 0, 0, 1280, 720);
+    }
+
+    void rasterize(float center, float view_width, float view_height, float bottom) {
         std::fill(color.begin(), color.end(), 0xffaeb9c7);
         std::fill(depth.begin(), depth.end(), 0.0f);
         const float distance = view_width * 0.5f / std::tan(fov * 0.00872664626f);
         const float focal = width * distance / view_width;
-        struct Point { float x, y, q, u, v; unsigned rgba; };
-        const auto edge = [](const Point& a, const Point& b, float x, float y) {
+        const auto edge = [](const ProjectedVertex& a, const ProjectedVertex& b, float x, float y) {
             return (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
         };
-        for (const auto& mesh : meshes) {
+        for (std::size_t mesh_index = 0; mesh_index < meshes.size(); ++mesh_index) {
+            const auto& mesh = meshes[mesh_index];
             const auto& texture = *textures.at(mesh.material);
             DIBSECTION dib{};
             GetObjectW(texture.bitmap, sizeof(dib), &dib);
             const auto* texels = static_cast<const unsigned*>(dib.dsBm.bmBits);
-            std::vector<Point> points;
-            points.reserve(mesh.vertices.size());
-            std::array<float, 2> uv{};
-            if (tick < mesh.intro_uv_offsets.size()) {
-                uv = mesh.intro_uv_offsets[tick];
-            } else if (!mesh.uv_offsets.empty()) {
-                uv = mesh.uv_offsets[(tick - mesh.intro_uv_offsets.size()) % mesh.uv_offsets.size()];
-            }
+            points.clear();
+            const auto& uv = current_uv[mesh_index];
             for (const auto& v : mesh.vertices) {
                 const float z = distance - v.z;
                 const float q = z >= near_clip && z <= far_clip ? 1.0f / z : 0.0f;
@@ -272,7 +543,6 @@ struct PracticeScene {
                 }
             }
         }
-        target.DrawImage(&image, 0, 0, 1280, 720);
     }
 };
 
@@ -341,6 +611,25 @@ constexpr std::array roster{
     "valentine", "parasoul", "double",
     "fukua", "beowulf", "robofortune",
     "umbrella", "annie", "blackdahlia"
+};
+
+// Filia FOIT moves 117, 121, 122 and 124. Zero sprite records hold the prior pose.
+constexpr skullgirls::NormalFrame throw_start[] = {
+    {399, 3}, {400, 3}, {401, 5}
+};
+constexpr skullgirls::NormalFrame throw_whiff[] = {
+    {401, 1}, {402, 9}, {401, 4}, {403, 3}, {404, 3}, {405, 3}, {406, 3}, {407, 3}
+};
+constexpr skullgirls::NormalFrame throw_capture[] = {
+    {401, 1}, {408, 16}, {409, 5}, {410, 4}, {411, 4},
+    {412, 4}, {418, 2}, {419, 1}, {420, 1},
+    {412, 4}, {418, 2}, {419, 1}, {420, 1},
+    {412, 4}, {418, 2}, {419, 1}, {420, 1},
+    {412, 3}, {418, 1}, {419, 1}, {420, 2},
+    {413, 5}, {414, 5}, {415, 4}, {416, 4}, {417, 4}
+};
+constexpr skullgirls::NormalFrame throw_recovery[] = {
+    {417, 1}, {421, 6}, {422, 4}, {423, 3}, {407, 4}
 };
 
 struct Menu {
@@ -433,7 +722,12 @@ struct Menu {
         bool practice_left = false, practice_right = false;
         bool dash_facing_right = true;
         // Filia FOIT standing-to-dash conditions at 0x8e30b and 0x8e39b.
-        std::array<int, 17> dash_input_history{};
+        skullgirls::FiliaDashHistory dash_input_history = [] {
+            skullgirls::FiliaDashHistory history{};
+            history.fill(skullgirls::filia_neutral);
+            return history;
+        }();
+        bool practice_up = false;
         int dash_direction = 0;
         unsigned dash_frame = 0, dash_tick = 0, movement_sprite = 0, walk_tick = 0;
         int walk_direction = 0;
@@ -449,6 +743,10 @@ struct Menu {
         unsigned fall_tick = 0;
         int air_dash_direction = 0;
         int normal_input = -1, active_normal = -1;
+        unsigned pressed_punches = 0, pressed_kicks = 0;
+        float hairball_speed = 0;
+        unsigned hairball_roll_ticks = 0, updo_flight_ticks = 0;
+        int queued_followup = -1;
         unsigned normal_frame = 0, normal_tick = 0, normal_pose = 0;
         bool normal_facing_right = true, normal_contact = false;
         const skullgirls::NormalHit* normal_hit = nullptr;
@@ -457,8 +755,28 @@ struct Menu {
         int hurt_group = -1;
         unsigned hurt_phase = 0;
         bool hurt_facing_right = true;
+        skullgirls::HeavyReaction::Type heavy_reaction = skullgirls::HeavyReaction::none;
+        float recoil_x = 0;
+        unsigned recoil_ticks = 0;
+        bool recoil_landed = false;
+        int striking_normal = -1;
+        bool throw_input = false;
+        bool throw_facing_right = true;
+        unsigned throw_tick = 0;
+        enum class ThrowPhase { none, start, whiff, capture, recovery, grabbed };
+        ThrowPhase throw_phase = ThrowPhase::none;
 
-        void take_hit(const skullgirls::NormalHit& hit, bool facing_right) {
+        void take_hit(const skullgirls::NormalHit& hit, bool facing_right, int move,
+                      skullgirls::HeavyReaction forced = {}) {
+            const auto reaction = forced.type != skullgirls::HeavyReaction::none ? forced :
+                (jump_height > 0 ? skullgirls::HeavyReaction{} : skullgirls::filia_heavy_reaction(move));
+            throw_phase = ThrowPhase::none;
+            heavy_reaction = reaction.type;
+            recoil_x = facing_right ? -reaction.horizontal : reaction.horizontal;
+            recoil_ticks = 0;
+            recoil_landed = false;
+            if (heavy_reaction != skullgirls::HeavyReaction::none)
+                jump_velocity = reaction.upward;
             const bool low = hit.height_mask == 2;
             hurt_group = jump_height > 0 || jump_velocity > 0 ? skullgirls::air_mid :
                 crouching ? (low ? skullgirls::crouch_low : skullgirls::crouch_high) :
@@ -469,14 +787,56 @@ struct Menu {
             hit_stop = std::max(hit_stop, hit.stop);
             movement_sprite = skullgirls::filia_hurt[hurt_group][0][0].sprite;
             active_normal = normal_input = -1;
+            queued_followup = -1;
             normal_hit = nullptr;
             dash_direction = air_dash_direction = 0;
             jump_start = landing = walk_tick = 0;
             walk_direction = 0;
-            dash_input_history.fill(0);
+            dash_input_history.fill(skullgirls::filia_neutral);
         }
 
-        void tick_hurt() {
+        void tick_hurt(float left, float right) {
+            using Reaction = skullgirls::HeavyReaction;
+            if (heavy_reaction != Reaction::none) {
+                if (!recoil_landed) {
+                    practice_x = std::clamp(practice_x + recoil_x, left, right);
+                    jump_height = std::max(0.0f, jump_height + jump_velocity);
+                    jump_velocity -= 1.0f;
+                    if (!jump_height && jump_velocity < 0) {
+                        recoil_landed = true;
+                        jump_velocity = 0;
+                        recoil_ticks = 0;
+                    }
+                }
+                if (heavy_reaction == Reaction::launch) {
+                    movement_sprite = jump_velocity > 0 ? 762 : 768;
+                    if (recoil_landed) {
+                        heavy_reaction = Reaction::none;
+                        hurt_group = -1;
+                        movement_sprite = 113;
+                        landing = 1;
+                    }
+                    return;
+                }
+                const bool front = heavy_reaction == Reaction::sweep;
+                const auto pose = [&](const auto& frames) {
+                    unsigned tick = recoil_ticks++;
+                    for (const auto& frame : frames) {
+                        if (tick < frame.ticks) return frame.sprite;
+                        tick -= frame.ticks;
+                    }
+                    return recoil_landed ? 0u : frames[std::size(frames) - 1].sprite;
+                };
+                movement_sprite = recoil_landed ?
+                    (front ? pose(skullgirls::filia_front_down) : pose(skullgirls::filia_back_down)) :
+                    (front ? pose(skullgirls::filia_front_fall) : pose(skullgirls::filia_knockback));
+                if (!movement_sprite) {
+                    heavy_reaction = Reaction::none;
+                    hurt_group = -1;
+                }
+                return;
+            }
+
             const auto& sequence = skullgirls::filia_hurt[hurt_group][hurt_phase];
             const auto& frame = sequence[hurt_frame];
             movement_sprite = frame.sprite;
@@ -498,42 +858,155 @@ struct Menu {
         }
 
 
-        void tick(float opponent_x, float left, float right, bool faces_right_at_tie) {
+        void advance_throw() {
+            const auto play = [&](const auto& frames) {
+                unsigned tick = throw_tick++;
+                for (const auto& frame : frames) {
+                    if (tick < frame.ticks) {
+                        movement_sprite = frame.sprite;
+                        return true;
+                    }
+                    tick -= frame.ticks;
+                }
+                throw_tick = 0;
+                return false;
+            };
+            switch (throw_phase) {
+            case ThrowPhase::start:
+                if (!play(throw_start)) {
+                    throw_phase = ThrowPhase::whiff;
+                    play(throw_whiff);
+                }
+                break;
+            case ThrowPhase::whiff:
+                if (!play(throw_whiff)) throw_phase = ThrowPhase::none;
+                break;
+            case ThrowPhase::capture:
+                if (!play(throw_capture)) {
+                    throw_phase = ThrowPhase::recovery;
+                    play(throw_recovery);
+                }
+                break;
+            case ThrowPhase::recovery:
+                if (!play(throw_recovery)) throw_phase = ThrowPhase::none;
+                break;
+            default: break;
+            }
+            if (throw_phase == ThrowPhase::none) movement_sprite = 0;
+        }
+
+        bool update_dash_input(int horizontal, bool airborne) {
+            std::move_backward(dash_input_history.begin(), dash_input_history.end() - 1,
+                               dash_input_history.end());
+            const int vertical = int(practice_up) - int(practice_down);
+            dash_input_history.front() = skullgirls::filia_input_direction(horizontal, vertical);
+            return skullgirls::filia_double_tap(dash_input_history, horizontal, airborne);
+        }
+
+        void tick(float opponent_x, float left, float right, bool faces_right_at_tie,
+                  const std::array<unsigned, std::size(skullgirls::filia_normals)>& multi_hit_end) {
             normal_hit = nullptr;
+            striking_normal = -1;
+            const bool wants_throw = std::exchange(throw_input, false);
+            const unsigned punches = std::exchange(pressed_punches, 0u);
+            const unsigned kicks = std::exchange(pressed_kicks, 0u);
+            const int direction = int(practice_right) - int(practice_left);
+            const bool airborne = jump_height > 0 || jump_velocity > 0;
+            const bool repeated_direction = update_dash_input(direction, airborne);
+            if (throw_phase != ThrowPhase::none) {
+                normal_input = -1;
+                practice_jump = false;
+                advance_throw();
+                return;
+            }
             if (hit_stop || hurt_group >= 0) {
                 practice_jump = false;
-                normal_input = -1;
+                if (hurt_group >= 0) normal_input = -1;
                 if (hit_stop) --hit_stop;
-                else tick_hurt();
+                else tick_hurt(left, right);
                 return;
             }
             const bool facing_right = (practice_x < opponent_x || (practice_x == opponent_x && faces_right_at_tie));
-            const bool airborne = jump_height > 0 || jump_velocity > 0;
-            if (normal_input >= 0 && active_normal < 0 && !jump_start && !landing) {
-                active_normal = normal_input + (airborne ? 12 : practice_down ? 6 : 0);
-                normal_frame = normal_tick = normal_pose = 0;
-                normal_facing_right = airborne ? jump_facing_right : facing_right;
+            if (wants_throw && active_normal < 0 && !airborne && !jump_start && !landing) {
+                throw_phase = ThrowPhase::start;
+                throw_facing_right = facing_right;
+                throw_tick = 0;
+                normal_input = -1;
+                dash_direction = 0;
+                advance_throw();
+                return;
+            }
+            int next_normal = -1;
+            // A fresh LP press can be queued during jab startup, then resolved on contact.
+            const bool repeat_jab = normal_input == 0 &&
+                (active_normal == 0 || active_normal == 6 ||
+                 active_normal == skullgirls::rapid_stand_lp || active_normal == skullgirls::rapid_crouch_lp);
+            if (active_normal >= 0 && normal_input >= 0 && (normal_contact || repeat_jab)) {
+                const auto followup = skullgirls::filia_normal_followup(
+                    active_normal, normal_input, airborne, practice_down);
+                if (followup >= 0) queued_followup = followup;
+            }
+            if (normal_input >= 0 && !jump_start && !landing) {
+                if (active_normal < 0) {
+                    if (!airborne && (punches || normal_input < 3) &&
+                        skullgirls::filia_updo_motion(dash_input_history, facing_right)) {
+                        const int strength = (punches & 4u) ? 2 : (punches & 2u) ? 1 :
+                            punches ? 0 : normal_input;
+                        next_normal = skullgirls::updo_light + strength;
+                    } else if (kicks && skullgirls::filia_quarter_circle(
+                                   dash_input_history, !facing_right, airborne)) {
+                        next_normal = airborne ? skullgirls::air_hairball : skullgirls::ground_hairball;
+                        // Moves 148-150 set horizontal speed in 0xa8 and the roll counter in 0xa9.
+                        const unsigned strength = (kicks & 4u) ? 2 : (kicks & 2u) ? 1 : 0;
+                        constexpr float ground_speed[] = {18, 22, 23};
+                        constexpr unsigned ground_roll_ticks[] = {11, 17, 29};
+                        hairball_speed = airborne ? 22.0f : ground_speed[strength];
+                        hairball_roll_ticks = airborne ? 17 : ground_roll_ticks[strength];
+                    } else if (!airborne && (kicks & 4u) && skullgirls::filia_quarter_circle(
+                                   dash_input_history, facing_right, false)) {
+                        next_normal = skullgirls::ringlet_psych;
+                    } else {
+                        next_normal = normal_input + (airborne ? 12 : practice_down ? 6 : 0);
+                    }
+                }
+            }
+            if (active_normal >= 0 && queued_followup >= 0) {
+                const bool rapid_fire = queued_followup == skullgirls::rapid_stand_lp ||
+                    queued_followup == skullgirls::rapid_crouch_lp;
+                const bool regular_jab = active_normal == 0 || active_normal == 6;
+                const bool past_active_frames = (regular_jab && !rapid_fire) ||
+                    normal_frame >= multi_hit_end[active_normal];
+                if ((normal_contact || rapid_fire) && past_active_frames) next_normal = queued_followup;
+            }
+            if (next_normal >= 0) {
+                if (active_normal < 0) normal_facing_right = airborne ? jump_facing_right : facing_right;
+                active_normal = next_normal;
+                updo_flight_ticks = 0;
+                normal_frame = normal_tick = 0;
+                // The repeat starts with a script-only record. Keep the displayed jab pose
+                // until that record supplies a replacement sprite.
+                if (next_normal != skullgirls::rapid_stand_lp && next_normal != skullgirls::rapid_crouch_lp)
+                    normal_pose = 0;
                 normal_contact = false;
                 last_contact = nullptr;
+                queued_followup = -1;
                 dash_direction = 0;
+                walk_tick = 0;
+                walk_direction = 0;
+                if ((next_normal >= 6 && next_normal < 12) || next_normal == skullgirls::rapid_crouch_lp) {
+                    crouching = true;
+                    rising = false;
+                    stance_tick = 19;
+                }
             }
             normal_input = -1;
-            const int direction = int(practice_right) - int(practice_left);
             const int relative = facing_right ? direction : -direction;
-            const bool direction_pressed = direction && dash_input_history.front() != direction;
-            const bool repeated_direction = direction_pressed &&
-                std::find(dash_input_history.begin() + 1, dash_input_history.end(), direction) !=
-                    dash_input_history.end();
-            std::move_backward(dash_input_history.begin(), dash_input_history.end() - 1,
-                               dash_input_history.end());
-            dash_input_history.front() = direction;
+            const bool doing_updo = active_normal >= skullgirls::updo_light && active_normal < skullgirls::ground_hairball;
             if (active_normal < 0 && repeated_direction && !dash_direction && !practice_down && !crouching &&
                 !rising && !jump_start && !jump_velocity && !jump_height && !landing && !practice_jump) {
                 dash_direction = relative;
                 dash_facing_right = facing_right;
                 dash_frame = dash_tick = 0;
-                dash_input_history.fill(0);
-                dash_input_history.front() = direction;
             }
             const float walk_speed = relative > 0 ? skullgirls::walk_forward.front().velocity :
                 skullgirls::walk_backward.front().velocity;
@@ -604,7 +1077,7 @@ struct Menu {
                     jump_start = 0;
                     jump_velocity = 32.0f;
                 }
-            } else if (jump_velocity || jump_height) {
+            } else if (!doing_updo && (jump_velocity || jump_height)) {
                 const int air_relative = jump_facing_right ? direction : -direction;
                 if (active_normal < 0 && repeated_direction && !air_dash_used && !air_dash_direction) {
                     air_dash_used = true;
@@ -668,9 +1141,18 @@ struct Menu {
                 if (!air_dash_direction && jump_height <= 0 && jump_velocity < 0) {
                     jump_height = jump_velocity = 0;
                     double_jump_tick = 0;
-                    movement_sprite = 113;
-                    active_normal = -1;
-                    landing = 1;
+                    if (active_normal == skullgirls::air_hairball) {
+                        active_normal = skullgirls::ground_hairball;
+                        normal_frame = skullgirls::hairball_end_frame;
+                        normal_tick = 0;
+                        hairball_roll_ticks = 0;
+                        last_contact = &skullgirls::filia_normal_hits[active_normal][1];
+                    } else {
+                        movement_sprite = 113;
+                        active_normal = -1;
+                        queued_followup = -1;
+                        landing = 1;
+                    }
                 }
             } else if (landing) {
                 constexpr std::array<unsigned, 17> poses{
@@ -678,7 +1160,7 @@ struct Menu {
                 movement_sprite = poses[landing - 1];
                 movement = 0;
                 if (++landing > poses.size()) landing = 0;
-            } else if (!was_dashing && (practice_down || crouching || rising)) {
+            } else if (active_normal < 0 && !was_dashing && (practice_down || crouching || rising)) {
                 constexpr std::array<unsigned, 19> down_poses{
                     40,40,40,40,40,40,41,41,41,42,42,42,43,43,43,44,44,44,44};
                 constexpr std::array<unsigned, 21> up_poses{
@@ -711,7 +1193,26 @@ struct Menu {
                     movement_sprite = 22 + pose;
                 }
             }
+            if (doing_updo) {
+                const auto& updo = skullgirls::updo_motion[active_normal - skullgirls::updo_light];
+                if (normal_frame == updo.lift_frame && normal_tick == 0) {
+                    jump_velocity = updo.upward;
+                    jump_horizontal = updo.forward;
+                    updo_flight_ticks = updo.flight_ticks;
+                }
+                if (jump_height > 0 || jump_velocity > 0) {
+                    jump_height = std::max(0.0f, jump_height + jump_velocity);
+                    jump_velocity -= updo.gravity;
+                    if (jump_height == 0) {
+                        jump_velocity = jump_horizontal = 0;
+                        normal_frame = updo.flight_frame + skullgirls::updo_air_loop_end;
+                        normal_tick = 0;
+                        last_contact = &skullgirls::filia_normal_hits[active_normal][0];
+                    }
+                }
+            }
             if (active_normal >= 0) {
+                striking_normal = active_normal;
                 const auto& sequence = skullgirls::filia_normals[active_normal];
                 const auto& frame = sequence[normal_frame];
                 if (frame.sprite) normal_pose = frame.sprite;
@@ -720,17 +1221,66 @@ struct Menu {
                     if (!hit.frame || hit.frame > normal_frame + 1) break;
                     normal_hit = &hit;
                 }
-                if (active_normal < 12) movement = 0;
+                if (doing_updo &&
+                    normal_frame >= skullgirls::updo_motion[active_normal - skullgirls::updo_light].flight_frame +
+                        skullgirls::updo_air_loop_end)
+                    normal_hit = nullptr;
+                // Move 113 exposes its attack boxes before its conditional hit record.
+                // Use that record for the preceding active poses in the preview.
+                if (active_normal == skullgirls::air_mp && !normal_hit && normal_pose)
+                    normal_hit = &skullgirls::filia_normal_hits[active_normal][0];
+                if (active_normal < 12 || active_normal >= skullgirls::rapid_stand_lp) movement = 0;
+                if (doing_updo && jump_height > 0) {
+                    const auto& updo = skullgirls::updo_motion[active_normal - skullgirls::updo_light];
+                    movement = normal_facing_right ? jump_horizontal : -jump_horizontal;
+                    jump_horizontal = std::max(0.0f, jump_horizontal - updo.friction);
+                }
+                const bool hairball_roll =
+                    (active_normal == skullgirls::ground_hairball || active_normal == skullgirls::air_hairball) &&
+                    normal_frame >= skullgirls::hairball_loop_frame && normal_frame < skullgirls::hairball_end_frame;
+                if (hairball_roll) {
+                    if (normal_frame == skullgirls::hairball_loop_frame && normal_tick == 0)
+                        last_contact = nullptr;
+                    movement = normal_facing_right ? hairball_speed : -hairball_speed;
+                    if (--hairball_roll_ticks == 0) {
+                        normal_frame = skullgirls::hairball_end_frame;
+                        normal_tick = 0;
+                        practice_x = std::clamp(practice_x + movement, left, right);
+                        return;
+                    }
+                }
+                if (doing_updo) {
+                    const auto& updo = skullgirls::updo_motion[active_normal - skullgirls::updo_light];
+                    if (normal_frame >= updo.flight_frame && normal_frame < updo.flight_frame + 4 &&
+                        updo_flight_ticks && --updo_flight_ticks == 0) {
+                        normal_frame = updo.flight_frame + 4;
+                        normal_tick = 0;
+                        practice_x = std::clamp(practice_x + movement, left, right);
+                        return;
+                    }
+                }
                 if (++normal_tick >= frame.ticks) {
                     normal_tick = 0;
-                    if (++normal_frame == std::size(sequence) || !sequence[normal_frame].ticks)
+                    ++normal_frame;
+                    if (hairball_roll && normal_frame == skullgirls::hairball_end_frame) {
+                        normal_frame = skullgirls::hairball_loop_frame;
+                    }
+                    if (doing_updo && jump_height > 0) {
+                        const auto flight = skullgirls::updo_motion[active_normal - skullgirls::updo_light].flight_frame;
+                        if (normal_frame == flight + skullgirls::updo_air_loop_end)
+                            normal_frame = flight + skullgirls::updo_air_loop_start;
+                    }
+                    if (normal_frame == std::size(sequence) || !sequence[normal_frame].ticks) {
                         active_normal = -1;
+                        queued_followup = -1;
+                    }
                 }
             }
             practice_x = std::clamp(practice_x + movement, left, right);
         }
 
         bool mirror(bool facing_right) const {
+            if (throw_phase != ThrowPhase::none) return !throw_facing_right;
             if (movement_sprite >= 702) return !hurt_facing_right;
             if (movement_sprite >= 198) return !normal_facing_right;
             if (movement_sprite >= 113) return !jump_facing_right;
@@ -741,8 +1291,10 @@ struct Menu {
     std::array<PracticeFighter, 2> practice_players;
     std::array<float, 2> practice_starts{};
     float practice_width = 0, practice_height = 0, practice_floor = 0;
-    std::array<skullgirls::SelectFrame, 735> movement_frames;
+    std::array<skullgirls::SelectFrame, 829> movement_frames;
     std::vector<skullgirls::SpriteFrame> combat_metadata;
+    std::map<unsigned, skullgirls::SelectFrame> jab_overlays;
+    std::array<unsigned, std::size(skullgirls::filia_normals)> multi_hit_end{};
 
     void load_movement_frames() {
         if (movement_frames[2].width) return;
@@ -752,11 +1304,12 @@ struct Menu {
         auto frames = skullgirls::read_foit_frames(
             read_sprite_asset(game_data / "characters-foits.gfs", "characters/filia.foit"), art.size());
         decltype(movement_frames) decoded;
+        decltype(jab_overlays) overlays;
         for (unsigned ref = 2; ref < decoded.size(); ++ref) {
             if ((ref >= 50 && ref < 59) || (ref >= 122 && ref < 130) ||
                 (ref >= 136 && ref < 142) || (ref >= 154 && ref < 166) ||
-                (ref >= 181 && ref < 190) || (ref >= 204 && ref < 208) ||
-                (ref >= 399 && ref < 702) || ref == 729) continue;
+                (ref >= 181 && ref < 190) ||
+                (ref >= 424 && ref < 466) || ref == 509 || (ref >= 543 && ref < 702) || ref == 729 || (ref >= 773 && ref < 828)) continue;
             const auto& source = frames.at(ref - 1);
             const auto& layer = source.layers[0].value();
             auto& frame = decoded[ref];
@@ -764,10 +1317,34 @@ struct Menu {
             frame.height = layer.tile_rows * 16;
             frame.origin_x = float(source.origin[0]) - float(source.primary_layer_offset[0]);
             frame.origin_y = float(source.origin[1]) - float(source.primary_layer_offset[1]);
-            frame.pixels = skullgirls::decode_sprite_layer(layer, source.art_bank == 4 ? alternate : art);
+            const auto& bank = source.art_bank == 4 ? alternate : art;
+            frame.pixels = skullgirls::decode_sprite_layer(layer, bank);
+            // Jab recovery and rapid-fire smear art share the primary layer's canvas.
+            if ((ref == 201 || (ref >= 204 && ref <= 207)) && source.layers[1]) {
+                const auto& overlay = *source.layers[1];
+                if (overlay.tile_columns != layer.tile_columns || overlay.tile_rows != layer.tile_rows)
+                    throw std::runtime_error("Unexpected Filia jab layer dimensions");
+                auto& effect = overlays[ref];
+                effect.width = frame.width;
+                effect.height = frame.height;
+                effect.pixels = skullgirls::decode_sprite_layer(overlay, bank);
+            }
         }
         movement_frames = std::move(decoded);
+        jab_overlays = std::move(overlays);
         combat_metadata = std::move(frames);
+        for (std::size_t move = 0; move < multi_hit_end.size(); ++move) {
+            const bool jab = move == 0 || move == 6;
+            if (!jab && !skullgirls::filia_normal_hits[move][1].frame) continue;
+            unsigned sprite = 0, frame_number = 0;
+            for (const auto& frame : skullgirls::filia_normals[move]) {
+                if (!frame.ticks) break;
+                ++frame_number;
+                if (frame.sprite) sprite = frame.sprite;
+                if (sprite && !combat_metadata.at(sprite - 1).box_groups[0].empty())
+                    multi_hit_end[move] = frame_number;
+            }
+        }
     }
     int practice_camera_center = 0;
     float practice_camera_zoom = 0;
@@ -825,8 +1402,20 @@ struct Menu {
                                             static_cast<int>(practice_width) - half_width);
     }
 
+    LoadingAnimation loading_animation;
+    std::chrono::steady_clock::time_point loading_started{};
+    std::future<void> practice_load;
+
+    ~Menu() { if (practice_load.valid()) practice_load.wait(); }
+
     void start_practice() {
+        loading_started = std::chrono::steady_clock::now();
+        practice_load = std::async(std::launch::async, [this] { load_practice(); });
+    }
+
+    void load_practice() {
         load_movement_frames();
+        prepare_practice_bitmaps();
         const auto config = skullgirls::read_sprite_asset(game_data / "stages.gfs", "stages/" + current_stage().level + ".lvl");
         std::istringstream stream(std::string(config.begin(), config.end()));
         std::string background_asset;
@@ -855,37 +1444,69 @@ struct Menu {
         }
         practice_scene = std::move(scene);
         practice_background = std::move(backdrop);
+    }
+
+    void finish_practice(HWND window) {
+        practice_load.get();
+        if (practice_scene) practice_scene->initialize_gpu(window);
         practice_stage_tick = 0;
+        practice_keys_held = {};
         reset_practice();
         idle_start = std::chrono::steady_clock::now();
         training = TrainingView::practice;
     }
 
-    void practice_key(WPARAM key, bool pressed, bool repeated = false) {
+    // FUN_0051e6a0 copies the Windows keyboard state to the current snapshot
+    // and preserves the previous snapshot. Combat commands read the snapshots.
+    std::array<unsigned, 2> practice_keys_held{};
+    std::array<unsigned, 2> practice_keys_previous{};
+
+    void practice_key(WPARAM key, bool pressed) {
         // Left, right, down, up, LP, MP, HP, LK, MK, HK.
         constexpr std::array<std::array<WPARAM, 10>, 2> keys{{
-            {VK_LEFT, VK_RIGHT, VK_DOWN, VK_UP, 'Z', 'X', 'C', 'A', 'S', 'D'},
-            {'J', 'L', 'K', 'I', 'F', 'G', 'H', 'V', 'B', 'N'},
+            {VK_LEFT, VK_RIGHT, VK_DOWN, VK_UP, 'A', 'S', 'D', 'Z', 'X', 'C'},
+            {'J', 'L', 'K', 'I', 'V', 'B', 'N', 'F', 'G', 'H'},
         }};
         for (std::size_t side = 0; side < keys.size(); ++side) {
             const auto& bindings = keys[side];
             const auto action = std::find(bindings.begin(), bindings.end(), key);
             if (action == bindings.end()) continue;
-            auto& player = practice_players[side];
-            switch (action - bindings.begin()) {
-            case 0: player.practice_left = pressed; break;
-            case 1: player.practice_right = pressed; break;
-            case 2: player.practice_down = pressed; break;
-            case 3: if (pressed && !repeated) player.practice_jump = true; break;
-            default:
-                if (pressed && !repeated) player.normal_input = static_cast<int>(action - bindings.begin()) - 4;
-                break;
-            }
+            const unsigned mask = 1u << (action - bindings.begin());
+            if (pressed) practice_keys_held[side] |= mask;
+            else practice_keys_held[side] &= ~mask;
             return;
         }
     }
 
+    void sample_practice_keys() {
+        constexpr unsigned throw_buttons = (1u << 4) | (1u << 7);
+        for (std::size_t side = 0; side < practice_players.size(); ++side) {
+            const unsigned held = practice_keys_held[side];
+            const unsigned pressed = held & ~practice_keys_previous[side];
+            practice_keys_previous[side] = held;
+            auto& player = practice_players[side];
+            player.practice_left = (held & 1u) != 0;
+            player.practice_right = (held & 2u) != 0;
+            player.practice_down = (held & 4u) != 0;
+            player.practice_up = (held & 8u) != 0;
+            player.practice_jump = (pressed & 8u) != 0;
+            player.pressed_punches = (pressed >> 4) & 7u;
+            player.pressed_kicks = (pressed >> 7) & 7u;
+            if ((held & throw_buttons) == throw_buttons && (pressed & throw_buttons)) {
+                player.throw_input = true;
+                player.normal_input = -1;
+                continue;
+            }
+            for (int button : {0, 3, 1, 4, 2, 5}) {
+                if (!(pressed & (1u << (button + 4)))) continue;
+                player.normal_input = button;
+                break;
+            }
+        }
+    }
+
     void reset_practice() {
+        practice_keys_previous = practice_keys_held;
         for (std::size_t side = 0; side < practice_players.size(); ++side) {
             practice_players[side] = {};
             practice_players[side].practice_x = practice_starts[side];
@@ -900,6 +1521,7 @@ struct Menu {
     }
 
     void practice_tick() {
+        sample_practice_keys();
         ++practice_stage_tick;
         const float half_width = 640.0f + 160.0f * practice_camera_zoom;
         // FUN_0057f150 publishes fighter limits 95 units inside the camera edges.
@@ -907,9 +1529,9 @@ struct Menu {
         const float right = std::min(practice_width, practice_camera_center + half_width - 95.0f);
         const float x1 = practice_players[0].practice_x;
         const float x2 = practice_players[1].practice_x;
-        practice_players[0].tick(x2, left, right, true);
+        practice_players[0].tick(x2, left, right, true, multi_hit_end);
         if (std::string_view(roster[fighters[1].front()]) == "filia")
-            practice_players[1].tick(x1, left, right, false);
+            practice_players[1].tick(x1, left, right, false, multi_hit_end);
 
         std::array<const skullgirls::NormalHit*, 2> contacts{};
         for (std::size_t side = 0; side < practice_players.size(); ++side) {
@@ -937,9 +1559,57 @@ struct Menu {
             player.last_contact = hit;
             player.normal_contact = true;
             player.hit_stop = std::max(player.hit_stop, hit->stop);
-            practice_players[1 - side].take_hit(*hit, !player.normal_facing_right);
+            practice_players[1 - side].take_hit(*hit, !player.normal_facing_right, player.striking_normal);
         }
+        resolve_practice_throws(left, right);
         update_practice_camera(false);
+    }
+
+    void resolve_practice_throws(float left, float right) {
+        using Phase = PracticeFighter::ThrowPhase;
+        for (std::size_t side = 0; side < practice_players.size(); ++side) {
+            auto& attacker = practice_players[side];
+            auto& defender = practice_players[1 - side];
+            const float forward = attacker.throw_facing_right ? 1.0f : -1.0f;
+            // Move 117 arms the grab on its ninth serialized tick.
+            if (attacker.throw_phase == Phase::start && attacker.throw_tick >= 9 && attacker.movement_sprite == 401 &&
+                defender.throw_phase != Phase::grabbed && defender.hurt_group < 0 &&
+                defender.jump_height == 0 && defender.jump_velocity == 0 &&
+                std::string_view(roster[fighters[1 - side].front()]) == "filia") {
+                const auto& grab = combat_metadata[400].box_groups[0];
+                const unsigned pose = defender.movement_sprite ? defender.movement_sprite : practice_idle_sprite();
+                const auto& hurt = combat_metadata[pose - 1].box_groups[1];
+                for (const auto& box : grab) {
+                    const auto world_grab = skullgirls::foit_world_box(box, static_cast<int>(attacker.practice_x), 0,
+                        attacker.throw_facing_right);
+                    for (const auto& target : hurt) {
+                        const auto world_hurt = skullgirls::foit_world_box(target, static_cast<int>(defender.practice_x),
+                            0, !defender.mirror(practice_facing_right(1 - side)));
+                        if (skullgirls::foit_boxes_overlap(world_grab, world_hurt)) {
+                            attacker.throw_phase = Phase::capture;
+                            attacker.throw_tick = 0;
+                            defender.throw_phase = Phase::grabbed;
+                            defender.throw_facing_right = !attacker.throw_facing_right;
+                            defender.active_normal = defender.queued_followup = -1;
+                            defender.movement_sprite = 828;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (defender.throw_phase != Phase::grabbed) continue;
+            if (attacker.throw_phase == Phase::capture) {
+                // Target offsets written at frames 0, 4, 7 and 10 of move 122.
+                const unsigned tick = attacker.throw_tick;
+                const float separation = tick <= 17 ? 242.0f : tick <= 22 ? 170.0f : tick <= 27 ? 99.0f : 0.0f;
+                defender.practice_x = std::clamp(attacker.practice_x + separation * forward, left, right);
+            } else {
+                const skullgirls::NormalHit release{0, 0, 0, 3};
+                // Move 122 sets +8 horizontal and -26 vertical at release.
+                defender.take_hit(release, !attacker.throw_facing_right, -1,
+                    {skullgirls::HeavyReaction::knockback, 8, 26});
+            }
+        }
     }
 
     unsigned practice_idle_sprite() const {
@@ -983,14 +1653,13 @@ struct Menu {
         }
         const auto draw_practice_idle = [&](int side, float x, bool mirror, bool shadow) {
             const auto fighter = fighters[side].front();
-            const auto palette = locked_colors[side].front();
+            const auto palette = match_palette(side, 0);
             if (std::string_view(roster[fighter]) != "filia") {
                 draw_idle(dc, fighter, palette, x, floor, mirror, shadow);
                 return;
             }
             const unsigned sprite = practice_idle_sprite();
-            draw_fighter_frame(dc, fighter, palette, movement_frames[sprite],
-                               10000 + sprite, x, floor, mirror, shadow);
+            draw_practice_frame(dc, side, sprite, x, floor, mirror, shadow);
         };
         const auto draw_players = [&](bool shadow) {
             for (int side : {1, 0}) {
@@ -998,8 +1667,7 @@ struct Menu {
                 const float x = player.practice_x - camera;
                 const bool mirror = player.mirror(practice_facing_right(side));
                 if (player.movement_sprite) {
-                    draw_fighter_frame(dc, fighters[side].front(), locked_colors[side].front(),
-                        movement_frames[player.movement_sprite], 10000 + player.movement_sprite, x,
+                    draw_practice_frame(dc, side, player.movement_sprite, x,
                         shadow ? floor : floor - player.jump_height, mirror, shadow);
                 } else {
                     draw_practice_idle(side, x, mirror, shadow);
@@ -1009,7 +1677,7 @@ struct Menu {
         draw_players(true);
         draw_players(false);
         dc.Restore(world);
-        draw_text(dc, L"P1  Arrows   Z X C / A S D        P2  I J K L   F G H / V B N        R Reset",
+        draw_text(dc, L"P1  Arrows   A S D / Z X C        P2  I J K L   V B N / F G H        R Reset",
                   {0, 675, 1280, 38}, 22, Gdiplus::StringAlignmentCenter);
         for (int side : {0, 1}) {
             if (practice_players[side].normal_contact)
@@ -1097,6 +1765,21 @@ struct Menu {
     std::array<std::vector<Palette>, roster.size()> palettes;
     std::array<std::vector<skullgirls::SelectFrame>, roster.size()> idle_frames;
     std::array<std::vector<std::size_t>, 2> locked_colors;
+    std::size_t match_palette(std::size_t side, std::size_t slot) const {
+        const auto selected = locked_colors[side][slot];
+        const auto fighter = fighters[side][slot];
+        const auto& colors = palettes[fighter];
+        // The Filia mirror match substitutes palette 2 on Player 2's default pick.
+        if (side != 1 || std::string_view(roster[fighter]) != "filia" ||
+            colors[selected].number != 1) return selected;
+        for (std::size_t other = 0; other < fighters[0].size(); ++other) {
+            if (fighters[0][other] != fighter || locked_colors[0][other] != selected) continue;
+            const auto alternate = std::find_if(colors.begin(), colors.end(),
+                [](const Palette& color) { return color.number == 2; });
+            if (alternate != colors.end()) return static_cast<std::size_t>(alternate - colors.begin());
+        }
+        return selected;
+    }
     std::chrono::steady_clock::time_point idle_start{};
     mutable std::map<std::tuple<int, std::size_t, std::size_t>, std::unique_ptr<Gdiplus::Bitmap>> idle_cache;
 
@@ -1113,6 +1796,65 @@ struct Menu {
         draw_fighter_frame(dc, fighter, palette, frames[index], index, x, y, mirror, shadow);
     }
 
+    std::unique_ptr<Gdiplus::Bitmap> make_fighter_bitmap(const skullgirls::SelectFrame& frame,
+                                                        int fighter, std::size_t palette) const {
+        const auto rgba = skullgirls::colorize_sprite_with_palette(frame.pixels, palettes[fighter][palette].colors);
+        auto bitmap = std::make_unique<Gdiplus::Bitmap>(frame.width, frame.height, PixelFormat32bppARGB);
+        Gdiplus::BitmapData data{};
+        Gdiplus::Rect bounds(0, 0, frame.width, frame.height);
+        if (bitmap->LockBits(&bounds, Gdiplus::ImageLockModeWrite, PixelFormat32bppARGB, &data) != Gdiplus::Ok)
+            return {};
+        for (unsigned row = 0; row < frame.height; ++row) {
+            auto* target = reinterpret_cast<std::uint32_t*>(
+                static_cast<BYTE*>(data.Scan0) + static_cast<std::ptrdiff_t>(row) * data.Stride);
+            for (unsigned col = 0; col < frame.width; ++col) {
+                const auto pixel = row * frame.width + col;
+                const auto* color = rgba.data() + pixel * 4;
+                target[col] = frame.pixels[pixel * 3] ?
+                    (unsigned(color[3]) << 24) | (unsigned(color[0]) << 16) |
+                    (unsigned(color[1]) << 8) | color[2] : 0;
+            }
+        }
+        bitmap->UnlockBits(&data);
+        return bitmap;
+    }
+
+    using PracticeBitmaps = std::vector<std::unique_ptr<Gdiplus::Bitmap>>;
+    std::array<PracticeBitmaps, 2> practice_bitmaps;
+    std::array<std::size_t, 2> practice_bitmap_side{};
+
+    void prepare_practice_bitmaps() {
+        decltype(practice_bitmaps) prepared;
+        for (std::size_t side = 0; side < prepared.size(); ++side) {
+            practice_bitmap_side[side] = side;
+            const auto fighter = fighters[side].front();
+            if (std::string_view(roster[fighter]) != "filia") continue;
+            const auto palette = match_palette(side, 0);
+            if (side == 1 && fighter == fighters[0].front() && palette == match_palette(0, 0)) {
+                practice_bitmap_side[side] = 0;
+                continue;
+            }
+            auto& sprites = prepared[side];
+            sprites.resize(movement_frames.size());
+            for (std::size_t i = 0; i < movement_frames.size(); ++i) {
+                const auto& frame = movement_frames[i];
+                if (frame.width && frame.height) {
+                    sprites[i] = make_fighter_bitmap(frame, fighter, palette);
+                    if (!sprites[i]) throw std::runtime_error("Cannot prepare training sprite bitmap");
+                    const auto overlay = jab_overlays.find(static_cast<unsigned>(i));
+                    if (overlay != jab_overlays.end()) {
+                        auto effect = make_fighter_bitmap(overlay->second, fighter, palette);
+                        if (!effect) throw std::runtime_error("Cannot prepare Filia jab overlay");
+                        Gdiplus::Graphics composite(sprites[i].get());
+                        if (composite.DrawImage(effect.get(), 0, 0, frame.width, frame.height) != Gdiplus::Ok)
+                            throw std::runtime_error("Cannot composite Filia jab overlay");
+                    }
+                }
+            }
+        }
+        practice_bitmaps = std::move(prepared);
+    }
+
     void draw_fighter_frame(Gdiplus::Graphics& dc, int fighter, std::size_t palette,
                             const skullgirls::SelectFrame& frame, std::size_t index,
                             float x, float y, bool mirror, bool shadow = false) const {
@@ -1120,27 +1862,23 @@ struct Menu {
         const auto key = std::make_tuple(fighter, palette, index);
         auto found = idle_cache.find(key);
         if (found == idle_cache.end()) {
-            if (idle_cache.size() >= 96) idle_cache.clear();
-            const auto rgba = skullgirls::colorize_sprite_with_palette(frame.pixels, palettes[fighter][palette].colors);
-            auto bitmap = std::make_unique<Gdiplus::Bitmap>(frame.width, frame.height, PixelFormat32bppARGB);
-            Gdiplus::BitmapData data{};
-            Gdiplus::Rect bounds(0, 0, frame.width, frame.height);
-            if (bitmap->LockBits(&bounds, Gdiplus::ImageLockModeWrite, PixelFormat32bppARGB, &data) != Gdiplus::Ok)
-                return;
-            for (unsigned row = 0; row < frame.height; ++row) {
-                auto* target = reinterpret_cast<std::uint32_t*>(
-                    static_cast<BYTE*>(data.Scan0) + static_cast<std::ptrdiff_t>(row) * data.Stride);
-                for (unsigned col = 0; col < frame.width; ++col) {
-                    const auto pixel = row * frame.width + col;
-                    const auto* color = rgba.data() + pixel * 4;
-                    target[col] = frame.pixels[pixel * 3] ?
-                        (unsigned(color[3]) << 24) | (unsigned(color[0]) << 16) |
-                        (unsigned(color[1]) << 8) | color[2] : 0;
-                }
-            }
-            bitmap->UnlockBits(&data);
+            if (idle_cache.size() >= 96) idle_cache.erase(idle_cache.begin());
+            auto bitmap = make_fighter_bitmap(frame, fighter, palette);
+            if (!bitmap) return;
             found = idle_cache.emplace(key, std::move(bitmap)).first;
         }
+        draw_fighter_bitmap(dc, *found->second, frame, x, y, mirror, shadow);
+    }
+
+    void draw_practice_frame(Gdiplus::Graphics& dc, std::size_t side, unsigned sprite,
+                             float x, float y, bool mirror, bool shadow) const {
+        const auto& bitmap = practice_bitmaps[practice_bitmap_side[side]][sprite];
+        if (bitmap) draw_fighter_bitmap(dc, *bitmap, movement_frames[sprite], x, y, mirror, shadow);
+    }
+
+    void draw_fighter_bitmap(Gdiplus::Graphics& dc, Gdiplus::Bitmap& bitmap,
+                             const skullgirls::SelectFrame& frame, float x, float y,
+                             bool mirror, bool shadow) const {
         const auto state = dc.Save();
         dc.TranslateTransform(x, y);
         if (mirror) dc.ScaleTransform(-1, 1);
@@ -1153,10 +1891,10 @@ struct Menu {
             silhouette.m[4][4] = 1.0f;
             Gdiplus::ImageAttributes attributes;
             attributes.SetColorMatrix(&silhouette);
-            dc.DrawImage(found->second.get(), bounds, 0, 0, float(frame.width),
+            dc.DrawImage(&bitmap, bounds, 0, 0, float(frame.width),
                          float(frame.height), Gdiplus::UnitPixel, &attributes);
         } else {
-            dc.DrawImage(found->second.get(), bounds);
+            dc.DrawImage(&bitmap, bounds);
         }
         dc.Restore(state);
     }
@@ -1211,7 +1949,7 @@ struct Menu {
                 team_size[player] = std::clamp(team_size[player] + horizontal, 1, 3);
             }
         } else if (training == TrainingView::fighters) {
-            constexpr std::array<WPARAM, 6> attack_keys{'Z', 'X', 'C', 'A', 'S', 'D'};
+            constexpr std::array<WPARAM, 6> attack_keys{'A', 'S', 'D', 'Z', 'X', 'C'};
             const auto attack = std::find(attack_keys.begin(), attack_keys.end(), key);
             const bool shortcut = attack != attack_keys.end();
             if (choosing_palette && key != VK_RETURN && !accept) {
@@ -1393,6 +2131,7 @@ struct Menu {
 
     void load(const std::filesystem::path& directory) {
         game_data = directory;
+        loading_animation.load(directory / "sprites.gfs");
         const auto archive = directory / "ui-win.gfs";
         const auto scene = skullgirls::read_sprite_asset(archive, "ui/Win/Main.gbs");
         timings = skullgirls::read_menu_timings(scene);
@@ -1635,7 +2374,7 @@ struct Menu {
             if (showing_stage_select()) {
                 for (std::size_t slot = 0; slot < fighters[side].size(); ++slot) {
                     const auto& anchor = pedestal_layout.anchors[side][slot];
-                    draw_idle(dc, fighters[side][slot], locked_colors[side][slot], anchor.x, anchor.y, side == 1);
+                    draw_idle(dc, fighters[side][slot], match_palette(side, slot), anchor.x, anchor.y, side == 1);
                 }
                 continue;
             }
@@ -1758,6 +2497,11 @@ struct Menu {
 
     void paint(HDC buffer) const {
         Gdiplus::Graphics dc(buffer);
+        if (practice_load.valid()) {
+            const auto elapsed = std::chrono::duration<double>(Clock::now() - loading_started).count();
+            loading_animation.draw(dc, static_cast<std::uint64_t>(elapsed * 60));
+            return;
+        }
         dc.SetInterpolationMode(Gdiplus::InterpolationModeBilinear);
         dc.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
         if (training == TrainingView::practice) {
@@ -1908,16 +2652,22 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     auto& menu = *menu_instance;
     switch (message) {
     case WM_LBUTTONDOWN:
+        if (menu.practice_load.valid()) return 0;
         if (!menu.title_visible) break;
         menu.leave_title();
         InvalidateRect(window, nullptr, FALSE);
         return 0;
     case WM_KILLFOCUS:
+        menu.practice_keys_held = {};
+        menu.practice_keys_previous = {};
         for (auto& player : menu.practice_players) {
             player.practice_left = player.practice_right = false;
-            player.practice_down = player.practice_jump = false;
+            player.practice_down = player.practice_up = player.practice_jump = false;
             player.normal_input = -1;
-            player.dash_input_history.fill(0);
+            player.queued_followup = -1;
+            player.throw_input = false;
+            player.pressed_punches = player.pressed_kicks = 0;
+            player.dash_input_history.fill(skullgirls::filia_neutral);
         }
         break;
     case WM_KEYUP:
@@ -1927,11 +2677,13 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         }
         break;
     case WM_KEYDOWN: {
+        if (menu.practice_load.valid()) return 0;
         if (menu.training == Menu::TrainingView::practice) {
             const bool repeated = (lparam & (1L << 30)) != 0;
-            menu.practice_key(wparam, true, repeated);
+            menu.practice_key(wparam, true);
             if (wparam == 'R' && !repeated) menu.reset_practice();
             if (wparam == VK_ESCAPE) {
+                menu.practice_bitmaps = {};
                 menu.training = Menu::TrainingView::stage_select;
                 SetWindowTextW(window, L"Skullgirls - Select Stage");
             }
@@ -1992,6 +2744,11 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 menu.set_submenu(true);
                 menu.cursor = menu.default_cursor[menu.selected];
             } else menu.unavailable = true;
+        }
+        if (menu.practice_load.valid()) {
+            SetWindowTextW(window, L"Skullgirls - Loading");
+            RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+            return 0;
         }
         const wchar_t* caption = L"Skullgirls Main Menu Reconstruction";
         switch (menu.training) {
@@ -2125,7 +2882,17 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
         if (now >= deadline) {
             const auto elapsed_ticks = 1 + (now - deadline) / frame_period;
             deadline += frame_period * elapsed_ticks;
-            if (menu.training == Menu::TrainingView::practice) {
+            if (menu.practice_load.valid() &&
+                menu.practice_load.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                try {
+                    menu.finish_practice(window);
+                    SetWindowTextW(window, L"Skullgirls - Training Room");
+                } catch (const std::exception& error) {
+                    SetWindowTextW(window, L"Skullgirls - Select Stage");
+                    MessageBoxA(window, error.what(), "Training Room", MB_OK | MB_ICONERROR);
+                }
+                deadline = Clock::now() + frame_period;
+            } else if (menu.training == Menu::TrainingView::practice) {
                 // Bound catch-up after a long stall without dropping ordinary late ticks.
                 for (auto ticks = std::min<decltype(elapsed_ticks)>(elapsed_ticks, 8); ticks > 0; --ticks)
                     menu.practice_tick();

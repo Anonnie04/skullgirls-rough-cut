@@ -25,13 +25,19 @@ accept, and X or S to go back. Open Training, then Training Room, to reach
 Training Options and Character Select.
 
 Select Filia for both players and choose Class Notes to try two-player Training.
-Player 1 uses the arrow keys to move, Z/X/C for punches, and A/S/D for kicks.
-Player 2 uses J/L to walk, K to crouch, I to jump, F/G/H for punches, and V/B/N
+Player 1 uses the arrow keys to move, A/S/D for punches, and Z/X/C for kicks.
+Player 2 uses J/L to walk, K to crouch, I to jump, V/B/N for punches, and F/G/H
 for kicks. Double-tap a direction to dash. R resets both fighters.
 
 Training includes standing, crouching, and aerial normals, hitbox overlap,
 hit stop, and basic hurt reactions. Reaction selection and recovery timing
 still need an in-game comparison. Launches and knockdowns are pending.
+
+The original Windows renderer initializes Direct3D 9 and submits indexed
+triangles through its wrapper at `004de9f0`. The Class Notes preview uses
+Direct3D 9 vertex buffers, index buffers, and textures to draw its meshes.
+It reads the result back for the preview's GDI+ composition. The original
+shader programs and presentation path still need to be reconstructed.
 
 This repository contains the reconstruction source and research notes.
 Game binaries, assets, and generated decompiler output are kept local.

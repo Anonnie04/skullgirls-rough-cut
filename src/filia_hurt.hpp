@@ -44,7 +44,7 @@ struct NormalHit { unsigned frame, stun, stop, height_mask; };
 
 // The serialized hit descriptor's first word and its +0x10 stop value.
 // Conditional descriptors are retained only when first encountered at a frame.
-constexpr NormalHit filia_normal_hits[18][6] = {
+constexpr NormalHit filia_normal_hits[26][6] = {
     {{8, 16, 7, 3}}, // Move 97
     {{10, 26, 9, 3}}, // Move 100
     {{9, 31, 11, 3}}, // Move 102
@@ -63,6 +63,37 @@ constexpr NormalHit filia_normal_hits[18][6] = {
     {{7, 17, 7, 1}}, // Move 112
     {{7, 17, 7, 1}, {14, 20, 7, 3}}, // Move 114
     {{9, 28, 11, 3}}, // Move 116
+    {{4, 16, 7, 3}}, // Move 98
+    {{6, 14, 7, 3}}, // Move 105
+    {{4, 16, 9, 3}, {9, 40, 8, 3}}, // Move 161
+    {{4, 16, 10, 3}, {9, 40, 8, 3}}, // Move 162
+    {{6, 40, 12, 3}, {8, 40, 11, 3}, {13, 40, 9, 3}}, // Move 163
+    {{11, 12, 2, 3}, {13, 32, 18, 3}}, // Moves 154 and 156
+    {{11, 12, 2, 3}, {13, 19, 16, 3}}, // Moves 155 and 157
+    {}, // Ringlet Psych
 };
+
+// Grounded-target velocities from the hit expressions in FOIT moves 102, 103,
+// 109 and 110. Vertical values here use the preview's positive-up coordinates.
+struct HeavyReaction {
+    enum Type { none, knockback, launch, sweep } type = none;
+    float horizontal = 0, upward = 0;
+};
+constexpr HeavyReaction filia_heavy_reaction(int move) {
+    switch (move) {
+    case 2: return {HeavyReaction::knockback, 28, 6};
+    case 5: return {HeavyReaction::knockback, 18, 30};
+    case 8: return {HeavyReaction::launch, -15, 6};
+    case 11: return {HeavyReaction::sweep, 16, 13};
+    default: return {};
+    }
+}
+
+// Poses from FOIT moves 284/286 (flight), 247/248 (back floor impact),
+// and 272/274 followed by 259/261/262 (front fall and impact).
+constexpr NormalFrame filia_knockback[] = {{769, 8}, {770, 4}, {771, 4}, {772, 4}};
+constexpr NormalFrame filia_back_down[] = {{744, 2}, {745, 2}, {735, 4}, {736, 4}, {737, 4}, {738, 40}};
+constexpr NormalFrame filia_front_fall[] = {{757, 3}, {758, 3}, {759, 3}, {760, 3}, {761, 3}};
+constexpr NormalFrame filia_front_down[] = {{752, 5}, {753, 2}, {739, 4}, {740, 4}, {741, 40}};
 
 }

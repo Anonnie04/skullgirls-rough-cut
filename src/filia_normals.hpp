@@ -5,7 +5,7 @@ namespace skullgirls {
 struct NormalFrame { unsigned sprite, ticks; };
 
 // LP, MP, HP, LK, MK, HK for standing, crouching, and aerial normals.
-constexpr NormalFrame filia_normals[18][40] = {
+constexpr NormalFrame filia_normals[26][64] = {
     { // FOIT move 97
         {0, 1}, {198, 1}, {0, 1}, {198, 1}, {0, 1}, {198, 1}, {199, 2}, {200, 1},
         {200, 2}, {0, 1}, {200, 3}, {201, 3}, {202, 4}, {0, 1}, {203, 4}, {0, 1},
@@ -88,6 +88,103 @@ constexpr NormalFrame filia_normals[18][40] = {
         {0, 1}, {0, 1}, {389, 3}, {390, 3}, {0, 1}, {391, 3}, {392, 2}, {393, 2},
         {0, 1}, {394, 2}, {0, 1}, {394, 8}, {395, 5}, {396, 5}, {397, 4}, {398, 4},
     },
+    { // FOIT move 98
+        {0, 1}, {204, 2}, {205, 3}, {206, 1}, {206, 2}, {206, 3},
+        {207, 4}, {201, 3}, {202, 3}, {0, 1}, {203, 3}, {0, 1},
+    },
+    { // FOIT move 105
+        {0, 1}, {265, 1}, {0, 1}, {265, 3}, {266, 2}, {267, 3}, {268, 3}, {269, 4},
+    },
+    { // FOIT Updo 161, flight and landing 164-168
+        {0, 1}, {510, 3}, {511, 5}, {0, 1}, {512, 2}, {0, 1}, {0, 1},
+        {0, 1}, {0, 1}, {513, 2}, {0, 1}, {515, 2}, {516, 2}, {517, 2},
+        {518, 2}, {0, 1}, {519, 4}, {520, 2}, {521, 4}, {0, 1}, {522, 2},
+        {523, 2}, {524, 2}, {525, 2}, {0, 1}, {526, 3}, {0, 1}, {527, 2},
+        {528, 2}, {529, 2}, {530, 2}, {0, 1}, {0, 1}, {531, 5}, {532, 2},
+        {0, 1}, {533, 4}, {534, 4}, {535, 4}, {0, 1}, {536, 4}, {537, 4},
+        {538, 3}, {539, 3}, {540, 3}, {541, 2}, {542, 2},
+    },
+    { // FOIT Updo 162, flight and landing 164-168
+        {0, 1}, {510, 3}, {511, 7}, {0, 1}, {514, 2}, {0, 1}, {0, 1},
+        {0, 1}, {0, 1}, {513, 2}, {0, 1}, {515, 2}, {516, 2}, {517, 2},
+        {518, 2}, {0, 1}, {519, 4}, {520, 2}, {521, 4}, {0, 1}, {522, 2},
+        {523, 2}, {524, 2}, {525, 2}, {0, 1}, {526, 3}, {0, 1}, {527, 2},
+        {528, 2}, {529, 2}, {530, 2}, {0, 1}, {0, 1}, {531, 5}, {532, 2},
+        {0, 1}, {533, 4}, {534, 4}, {535, 4}, {0, 1}, {536, 4}, {537, 4},
+        {538, 3}, {539, 3}, {540, 3}, {541, 2}, {542, 2},
+    },
+    { // FOIT Updo 163, flight and landing 164-168
+        {0, 1}, {507, 2}, {508, 2}, {510, 3}, {511, 6}, {0, 1}, {511, 1},
+        {0, 1}, {512, 1}, {0, 1}, {0, 1}, {0, 1}, {0, 1}, {513, 2},
+        {0, 1}, {515, 2}, {516, 2}, {517, 2}, {518, 2}, {0, 1}, {519, 4},
+        {520, 2}, {521, 4}, {0, 1}, {522, 2}, {523, 2}, {524, 2}, {525, 2},
+        {0, 1}, {526, 3}, {0, 1}, {527, 2}, {528, 2}, {529, 2}, {530, 2},
+        {0, 1}, {0, 1}, {531, 5}, {532, 2}, {0, 1}, {533, 4}, {534, 4},
+        {535, 4}, {0, 1}, {536, 4}, {537, 4}, {538, 3}, {539, 3}, {540, 3},
+        {541, 2}, {542, 2},
+    },
+    { // Ground Hairball (moves 148-150, 154, 156)
+        {0, 1}, {487, 4}, {488, 3}, {489, 4}, {0, 1}, {490, 3}, {0, 1},
+        {491, 2}, {492, 2}, {493, 2}, {494, 2}, {0, 1}, {491, 3}, {495, 3},
+        {0, 1}, {496, 2}, {497, 3}, {498, 2}, {499, 3}, {0, 1}, {500, 3},
+        {501, 4}, {502, 5}, {503, 4},
+    },
+    { // Air Hairball (moves 151-153, 155, 157)
+        {0, 1}, {488, 4}, {489, 5}, {490, 4}, {0, 1}, {0, 1}, {491, 2},
+        {492, 2}, {493, 2}, {494, 2}, {0, 1}, {491, 3}, {504, 7}, {0, 1},
+        {505, 5}, {506, 4},
+    },
+    { // Ringlet Psych (move 147)
+        {0, 1}, {467, 2}, {0, 1}, {467, 3}, {468, 5}, {469, 4}, {0, 1},
+        {471, 3}, {482, 3}, {483, 3}, {484, 3}, {485, 2},
+    },
 };
+
+constexpr int air_mp = 13;
+constexpr int rapid_stand_lp = 18;
+constexpr int rapid_crouch_lp = 19;
+constexpr int updo_light = 20;
+constexpr int ground_hairball = 23;
+struct UpdoMotion {
+    unsigned lift_frame, flight_frame, flight_ticks;
+    float forward, upward, gravity, friction;
+};
+// Initial motion writes in 161-163, followed by the timer in 164.
+constexpr UpdoMotion updo_motion[] = {
+    {6, 10, 4, 20, 30, 2.5f, 2.5f},
+    {6, 10, 6, 21, 34, 2.5f, 2},
+    {10, 14, 10, 24, 42, 2, 2.25f},
+};
+constexpr unsigned updo_air_loop_end = 20;
+constexpr unsigned updo_air_loop_start = 15;
+constexpr int air_hairball = 24;
+constexpr int ringlet_psych = 25;
+// Startup and loop each have the same record counts for ground and air.
+constexpr unsigned hairball_loop_frame = 6;
+constexpr unsigned hairball_end_frame = 11;
+
+// Input strength operands in the FOIT transition conditions, in keyboard order.
+constexpr unsigned filia_normal_input_order[] = {1, 3, 5, 2, 4, 6};
+// Each move initializes FOIT variable 0x7f. Standing HP and crouching HP write 6.
+constexpr unsigned filia_normal_chain_order[] = {
+    1, 3, 6, 2, 4, 6,
+    1, 3, 6, 2, 4, 6,
+    1, 3, 5, 2, 4, 6,
+    1, 1,
+};
+
+constexpr int filia_normal_followup(int current, int button, bool airborne, bool down) {
+    if (current >= updo_light) return -1;
+    const int target = button + (airborne ? 12 : down ? 6 : 0);
+    const bool current_air = current >= 12 && current < 18;
+    if (current_air != airborne) return -1;
+    // Moves 97 and 104 have explicit repeat edges to the rapid-fire variants.
+    if (button == 0 && (current == 0 || current == 6))
+        return down ? rapid_crouch_lp : rapid_stand_lp;
+    // Moves 98 and 105 return to a regular jab on the next LP press.
+    if (button == 0 && (current == rapid_stand_lp || current == rapid_crouch_lp))
+        return target;
+    return filia_normal_input_order[button] > filia_normal_chain_order[current] ? target : -1;
+}
 
 }
