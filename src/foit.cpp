@@ -14,6 +14,8 @@ public:
     Reader(const SpriteBytes& bytes, std::size_t position = 0)
         : bytes_(bytes), position_(position) {}
 
+    std::size_t position() const { return position_; }
+
     std::size_t take(std::size_t size)
     {
         if (position_ > bytes_.size() || size > bytes_.size() - position_) {
@@ -40,6 +42,13 @@ public:
         std::int32_t value;
         std::memcpy(&value, &bits, sizeof(value));
         return value;
+    }
+
+    std::string string()
+    {
+        const auto size = number(1);
+        const auto start = take(size);
+        return std::string(bytes_.begin() + start, bytes_.begin() + start + size);
     }
 
 private:
@@ -109,7 +118,10 @@ bool foit_boxes_overlap(const WorldBox& a, const WorldBox& b)
     return a[2] <= b[3] && b[2] <= a[3] && a[0] >= b[1] && b[0] >= a[1];
 }
 
-std::vector<SpriteFrame> read_foit_frames(const SpriteBytes& foit, std::size_t main_art_size)
+namespace {
+
+std::vector<SpriteFrame> read_frame_table(const SpriteBytes& foit, std::size_t main_art_size,
+                                         std::size_t& table_end)
 {
     const bool legacy = !is_versioned_foit(foit);
     if (!legacy) {
@@ -174,12 +186,204 @@ std::vector<SpriteFrame> read_foit_frames(const SpriteBytes& foit, std::size_t m
                 }
                 frames.push_back(std::move(frame));
             }
+            table_end = reader.position();
             return frames;
         } catch (const std::runtime_error&) {
             // A matching byte pattern can appear before the actual frame table.
         }
     }
     throw std::runtime_error("No valid FOIT frame table");
+}
+
+void read_expression(Reader& reader, std::vector<FoitExpression>* expressions = nullptr)
+{
+    for (;;) {
+        const auto a = reader.number(1);
+        const auto b = reader.number(1);
+        const auto c = reader.number(1);
+        const auto flags = reader.number(1);
+        if (expressions) {
+            const auto opcode = static_cast<std::uint8_t>(reader.number(1));
+            const auto read_operand = [&](std::uint32_t type) {
+                return FoitOperand{static_cast<std::uint8_t>(type), reader.number((type & 1) ? 1 : 4)};
+            };
+            const auto left = read_operand(a), right = read_operand(b), destination = read_operand(c);
+            expressions->push_back({opcode, bool(flags & 1), left, right, destination});
+        } else {
+            reader.take(1 + ((a & 1) ? 1 : 4) + ((b & 1) ? 1 : 4) + ((c & 1) ? 1 : 4));
+        }
+        if (!(flags & 2)) return;
+    }
+}
+
+void read_condition(Reader& reader, FoitCondition* condition = nullptr)
+{
+    const auto window = reader.number(2);
+    const auto buffer = reader.number(2);
+    const auto count = reader.number(2);
+    const auto flags = reader.number(1);
+    if (condition) {
+        condition->window = static_cast<std::uint16_t>(window);
+        condition->buffer = static_cast<std::uint16_t>(buffer);
+        condition->flags = static_cast<std::uint8_t>(flags);
+    }
+    for (unsigned i = 0; i < count + bool(flags & 2); ++i) {
+        FoitInputStep step{};
+        for (auto& direction : step.directions) direction = static_cast<std::uint8_t>(reader.number(1));
+        step.hold = static_cast<std::uint16_t>(reader.number(2));
+        const auto step_flags = reader.number(1);
+        step.invert_direction = bool(step_flags & 1);
+        if (step_flags & 2) read_expression(reader, condition ? &step.tests : nullptr);
+        for (auto& button : step.buttons) button = static_cast<std::uint8_t>(reader.number(1));
+        if (condition) {
+            // The optional reject pattern precedes the command's steps.
+            if ((flags & 2) && i == 0) condition->reject = std::move(step);
+            else condition->steps.push_back(std::move(step));
+        }
+    }
+}
+
+std::uint16_t read_animation_ticks(Reader& reader, FoitAnimationFrame* frame = nullptr)
+{
+    std::optional<std::uint16_t> ticks;
+    auto* script = frame ? &frame->script : nullptr;
+    FoitFrameVariant* variant = nullptr;
+    for (;;) {
+        const auto first_flags = reader.number(1);
+        reader.take(1);
+        const auto third_flags = reader.number(1);
+        if (third_flags & 128) read_expression(reader, script);
+        const auto duration = static_cast<std::uint16_t>((first_flags & 1) ? reader.number(2) : 1);
+        if (!ticks) ticks = duration;
+        if (variant && (first_flags & 1)) variant->duration = duration;
+        if (third_flags & 64) reader.take(1);
+
+        // Hit descriptors, child spawns and sounds are consumed here by the reader.
+        const auto payloads = reader.number(1);
+        if (payloads & ~7u) throw std::runtime_error("Invalid FOIT animation frame payload");
+        if (payloads & 1) {
+            reader.take(27);
+            const auto flags = reader.number(1);
+            reader.take(1);
+            for (unsigned flag = 1; flag < 16; flag <<= 1)
+                if (flags & flag) read_expression(reader);
+            if (flags & 16) reader.take(2);
+        }
+        if (payloads & 2) {
+            do {
+                reader.take(10);
+                if (reader.number(1) & 2) read_expression(reader);
+            } while (reader.number(1));
+        }
+        if (payloads & 4) reader.take(4 * reader.number(1));
+        if (!reader.number(1)) return *ticks;
+        if (frame) {
+            variant = &frame->variants.emplace_back();
+            script = &variant->script;
+        }
+        read_condition(reader, variant ? &variant->condition : nullptr);
+    }
+}
+
+void read_move_table(Reader& reader, std::size_t file_size, std::size_t sprite_count,
+                     FoitMoveTable& table, bool read_children, unsigned depth = 0)
+{
+    reader.take(1);
+    const auto count = reader.number(2);
+    if (count > (file_size - reader.position()) / 10)
+        throw std::runtime_error("Truncated FOIT animation table");
+    table.animations.reserve(count);
+    table.successors.reserve(count);
+    table.transitions.reserve(count);
+    for (unsigned i = 0; i < count; ++i) {
+        const auto flags = reader.number(1);
+        if (flags & ~15u) throw std::runtime_error("Invalid FOIT animation flags");
+        if (flags & 12) reader.take(4);
+        reader.take(1);
+        if (flags & 2) reader.take(4 * reader.number(1));
+        const auto transitions = reader.number(2);
+        const auto successor = reader.number(2);
+        if (successor >= count) throw std::runtime_error("Invalid FOIT animation successor");
+        table.successors.push_back(static_cast<std::uint16_t>(successor));
+        const auto frames = reader.number(2);
+        if (frames > (file_size - reader.position()) / 11)
+            throw std::runtime_error("Truncated FOIT animation frames");
+        auto& animation = table.animations.emplace_back();
+        animation.reserve(frames);
+        for (unsigned j = 0; j < frames; ++j) {
+            FoitAnimationFrame frame{};
+            for (auto& sprite : frame.sprites) {
+                sprite = static_cast<std::uint16_t>(reader.number(2));
+                if (sprite > sprite_count) throw std::runtime_error("Invalid FOIT sprite reference");
+            }
+            frame.ticks = read_animation_ticks(reader, &frame);
+            animation.push_back(std::move(frame));
+        }
+        if (reader.number(1)) {
+            read_condition(reader);
+            read_animation_ticks(reader);
+        }
+        if (reader.number(1)) read_expression(reader);
+        auto& links = table.transitions.emplace_back();
+        for (unsigned j = 0; j < transitions; ++j) {
+            const auto target = reader.number(2);
+            if (target >= count) throw std::runtime_error("Invalid FOIT animation link");
+            auto& link = links.emplace_back();
+            link.target = static_cast<std::uint16_t>(target);
+            read_condition(reader, &link.condition);
+        }
+    }
+
+    if (!read_children) return;
+
+    // FUN_004927d0 reads the move table, then child entities and finally
+    // one length-prefixed debug name per local move. Children share the sprites.
+    reader.take(4);
+    if (reader.number(1)) reader.take(2);
+    reader.take(18);
+    const auto children = reader.number(4);
+    if (children > (file_size - reader.position()) / 12 || (children && depth == 16))
+        throw std::runtime_error("Invalid FOIT child table");
+    table.children.reserve(children);
+    for (unsigned i = 0; i < children; ++i) {
+        const auto data = reader.number(4);
+        if (reader.number(4) != 0x4e535256 || reader.number(4) != 9 || data < reader.position())
+            throw std::runtime_error("Invalid FOIT child header");
+        reader.take(data - reader.position());
+        reader.take(reader.number(1)); // Entity name.
+        reader.take(4);
+        if (reader.number(1)) throw std::runtime_error("Unsupported FOIT child entity data");
+        reader.take(5 * reader.number(1));
+        reader.take(0xb1 * 4); // Initial entity variables.
+        const auto expressions = reader.number(1);
+        for (unsigned bit : {1u, 2u, 4u})
+            if (expressions & bit) read_expression(reader);
+        if (reader.number(1)) throw std::runtime_error("FOIT child has its own sprite table");
+        read_move_table(reader, file_size, sprite_count, table.children.emplace_back(), true, depth + 1);
+    }
+    table.names.reserve(count);
+    for (unsigned i = 0; i < count; ++i) table.names.push_back(reader.string());
+}
+
+}
+
+std::vector<SpriteFrame> read_foit_frames(const SpriteBytes& foit, std::size_t main_art_size)
+{
+    std::size_t table_end = 0;
+    return read_frame_table(foit, main_art_size, table_end);
+}
+
+FoitAnimationAsset read_foit_animation_asset(const SpriteBytes& foit, std::size_t main_art_size, bool read_children)
+{
+    if (!is_versioned_foit(foit) || Reader(foit, 8).number(4) != 9) {
+        throw std::runtime_error("Animation timelines require a version 9 FOIT file");
+    }
+    std::size_t table_end = 0;
+    FoitAnimationAsset asset;
+    asset.sprites = read_frame_table(foit, main_art_size, table_end);
+    Reader reader(foit, table_end);
+    read_move_table(reader, foit.size(), asset.sprites.size(), asset, read_children);
+    return asset;
 }
 
 SpriteBytes read_dds_palette(const SpriteBytes& dds)
@@ -287,6 +491,49 @@ SpriteBytes read_legacy_palette(const SpriteBytes& foit)
     return palette;
 }
 
+namespace {
+
+std::uint32_t shaded_argb(const std::uint8_t* row, unsigned shade)
+{
+    const double x = (shade % 32) / 31.0 * 15.0;
+    const auto left = static_cast<unsigned>(x);
+    const auto right = std::min(left + 1, 15u);
+    const double fraction = x - left;
+    const double black = (shade / 32) / 7.0;
+    std::uint32_t argb = 0;
+    for (unsigned component = 0; component < 4; ++component) {
+        const double color = row[left * 4 + component] * (1 - fraction)
+                           + row[right * 4 + component] * fraction;
+        const double shaded = component == 3
+            ? std::max(std::fmod(color, 128.0) * 2, black * 255)
+            : color * (1 - black);
+        const auto value = static_cast<std::uint32_t>(std::nearbyint(std::clamp(shaded, 0.0, 255.0)));
+        argb |= value << (component * 8);
+    }
+    return argb;
+}
+
+}
+
+SpritePaletteLookup::SpritePaletteLookup(const SpriteBytes& palette)
+{
+    const auto rows = palette.size() / 64;
+    if (!rows || palette.size() % 64) {
+        throw std::runtime_error("Invalid palette or sprite channels");
+    }
+    colors_.resize(256 * 256);
+    const auto used_rows = std::min<std::size_t>(rows, 256);
+    for (std::size_t row = 0; row < used_rows; ++row) {
+        for (unsigned shade = 0; shade < 256; ++shade) {
+            colors_[row * 256 + shade] = shaded_argb(palette.data() + row * 64, shade);
+        }
+    }
+    // Out-of-range indices use the last row, just like the single-image converter.
+    for (std::size_t row = used_rows; row < 256; ++row) {
+        std::copy_n(colors_.data() + (used_rows - 1) * 256, 256, colors_.data() + row * 256);
+    }
+}
+
 SpriteBytes colorize_sprite_with_palette(const SpriteBytes& pixels, const SpriteBytes& palette)
 {
     const auto rows = palette.size() / 64;
@@ -296,21 +543,10 @@ SpriteBytes colorize_sprite_with_palette(const SpriteBytes& pixels, const Sprite
     SpriteBytes rgba;
     rgba.reserve(pixels.size() / 3 * 4);
     for (std::size_t i = 0; i < pixels.size(); i += 3) {
-        const auto green = pixels[i + 1];
         const auto row = std::min<std::size_t>(pixels[i + 2], rows - 1);
-        const double x = (green % 32) / 31.0 * 15.0;
-        const auto left = static_cast<unsigned>(x);
-        const auto right = std::min(left + 1, 15u);
-        const double fraction = x - left;
-        const double black = (green / 32) / 7.0;
-        for (int component : {2, 1, 0, 3}) {
-            const auto base = row * 64 + component;
-            const double color = palette[base + left * 4] * (1 - fraction)
-                               + palette[base + right * 4] * fraction;
-            const double shaded = component == 3
-                ? std::max(std::fmod(color, 128.0) * 2, black * 255)
-                : color * (1 - black);
-            rgba.push_back(static_cast<std::uint8_t>(std::nearbyint(std::clamp(shaded, 0.0, 255.0))));
+        const auto argb = shaded_argb(palette.data() + row * 64, pixels[i + 1]);
+        for (unsigned shift : {16, 8, 0, 24}) {
+            rgba.push_back(static_cast<std::uint8_t>(argb >> shift));
         }
     }
     return rgba;
@@ -319,6 +555,29 @@ SpriteBytes colorize_sprite_with_palette(const SpriteBytes& pixels, const Sprite
 SpriteBytes colorize_sprite(const SpriteBytes& pixels, const SpriteBytes& dds)
 {
     return colorize_sprite_with_palette(pixels, read_dds_palette(dds));
+}
+
+void composite_sprite_rgba(SpriteBytes& base, const SpriteBytes& overlay)
+{
+    if (base.size() != overlay.size() || base.size() % 4)
+        throw std::runtime_error("Sprite layer sizes differ");
+
+    // Match Pillow's integer source-over rounding with seven fractional bits.
+    const auto divide_by_255 = [](unsigned value) {
+        return ((value >> 8) + value) >> 8;
+    };
+    for (std::size_t i = 0; i < base.size(); i += 4) {
+        const unsigned source_alpha = overlay[i + 3];
+        if (!source_alpha) continue;
+        const unsigned alpha = source_alpha * 255 + base[i + 3] * (255 - source_alpha);
+        const unsigned source_weight = source_alpha * 255 * 255 * 128 / alpha;
+        const unsigned base_weight = 255 * 128 - source_weight;
+        for (unsigned channel = 0; channel < 3; ++channel) {
+            const auto value = overlay[i + channel] * source_weight + base[i + channel] * base_weight;
+            base[i + channel] = static_cast<std::uint8_t>(divide_by_255(value + 128 * 128) >> 7);
+        }
+        base[i + 3] = static_cast<std::uint8_t>(divide_by_255(alpha + 128));
+    }
 }
 
 }

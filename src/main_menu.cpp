@@ -12,16 +12,23 @@
 #include "fighter_select.hpp"
 #include "select_idle.hpp"
 #include "foit.hpp"
+#include "foit_script.hpp"
 #include "filia_movement.hpp"
 #include "filia_hurt.hpp"
+#include "filia_defense.hpp"
+#include "filia_reactions.hpp"
+#include "filia_presentation.hpp"
+#include "filia_team.hpp"
 #include "gfs.hpp"
 #include "stage_scene.hpp"
 #include <tuple>
+#include <iomanip>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cwctype>
 #include <array>
 #include <stdexcept>
 #include <sstream>
@@ -220,9 +227,13 @@ struct TiledAnimation {
     unsigned ticks = 0;
 
     void load(const std::filesystem::path& archive, const std::string& sprite, std::string_view sequence) {
-        using skullgirls::read_sprite_asset;
+        skullgirls::SpriteArchive assets(archive);
+        load(assets, sprite, sequence);
+    }
+
+    void load(skullgirls::SpriteArchive& archive, const std::string& sprite, std::string_view sequence) {
         const auto path = "sprites/" + sprite;
-        const auto bytes = read_sprite_asset(archive, path + ".spr.msb");
+        const auto bytes = archive.read(path + ".spr.msb");
         skullgirls::StageReader reader(bytes);
         if (reader.string() != "2.0" || reader.string() != sprite)
             throw std::runtime_error("Unsupported tiled sprite");
@@ -236,7 +247,7 @@ struct TiledAnimation {
             sequence_count > bytes.size() / 24 || reader.word(8) != 16 || reader.word(8) != 16)
             throw std::runtime_error("Invalid loading sprite layout");
         Texture atlas;
-        atlas.load(read_sprite_asset(archive, path + ".dds"));
+        atlas.load(archive.read(path + ".dds"));
         std::vector<Tile> tiles;
         tiles.reserve(static_cast<std::size_t>(tile_count));
         for (std::uint64_t i = 0; i < tile_count; ++i) {
@@ -827,8 +838,7 @@ std::wstring option_label(const std::string& key) {
 }
 
 void draw_text(Gdiplus::Graphics& dc, const wchar_t* text, Gdiplus::RectF bounds,
-               float size, Gdiplus::StringAlignment alignment) {
-    Gdiplus::Font font(L"Arial", size, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+               const Gdiplus::Font& font, Gdiplus::StringAlignment alignment) {
     Gdiplus::StringFormat format;
     format.SetAlignment(alignment);
     Gdiplus::SolidBrush shadow(Gdiplus::Color(235, 0, 0, 0));
@@ -837,6 +847,12 @@ void draw_text(Gdiplus::Graphics& dc, const wchar_t* text, Gdiplus::RectF bounds
     dc.DrawString(text, -1, &font, bounds, &format, &shadow);
     bounds.Offset(-2, -2);
     dc.DrawString(text, -1, &font, bounds, &format, &cream);
+}
+
+void draw_text(Gdiplus::Graphics& dc, const wchar_t* text, Gdiplus::RectF bounds,
+               float size, Gdiplus::StringAlignment alignment) {
+    const Gdiplus::Font font(L"Arial", size, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+    draw_text(dc, text, bounds, font, alignment);
 }
 
 constexpr std::array roster{
@@ -849,23 +865,45 @@ constexpr std::array roster{
     "umbrella", "annie", "blackdahlia"
 };
 
-// Filia FOIT moves 117, 121, 122 and 124. Zero sprite records hold the prior pose.
+// Filia FOIT moves 117/118 and 121–124. Their script-only records
+// set variable 0x3a, causing the engine to advance again within the same tick.
 constexpr skullgirls::NormalFrame throw_start[] = {
-    {399, 3}, {400, 3}, {401, 5}
+    {399, 2}, {400, 3}, {401, 3}
 };
 constexpr skullgirls::NormalFrame throw_whiff[] = {
-    {401, 1}, {402, 9}, {401, 4}, {403, 3}, {404, 3}, {405, 3}, {406, 3}, {407, 3}
+    {402, 9}, {401, 4}, {403, 3}, {404, 3}, {405, 3}, {406, 3}, {407, 3}
 };
-constexpr skullgirls::NormalFrame throw_capture[] = {
-    {401, 1}, {408, 16}, {409, 5}, {410, 4}, {411, 4},
+constexpr skullgirls::NormalFrame throw_capture_common[] = {
+    {408, 15}, {409, 3}, {410, 3}, {411, 3},
     {412, 4}, {418, 2}, {419, 1}, {420, 1},
     {412, 4}, {418, 2}, {419, 1}, {420, 1},
     {412, 4}, {418, 2}, {419, 1}, {420, 1},
-    {412, 3}, {418, 1}, {419, 1}, {420, 2},
-    {413, 5}, {414, 5}, {415, 4}, {416, 4}, {417, 4}
+    {412, 3}, {418, 1}, {419, 1}, {420, 1}, {413, 4}
 };
+constexpr skullgirls::NormalFrame throw_capture_back[] = {{414, 4}, {415, 3}, {416, 3}, {417, 3}};
+constexpr skullgirls::NormalFrame throw_capture_forward[] = {{414, 8}, {415, 3}, {416, 3}, {417, 3}};
 constexpr skullgirls::NormalFrame throw_recovery[] = {
-    {417, 1}, {421, 6}, {422, 4}, {423, 3}, {407, 4}
+    {421, 6}, {422, 3}, {423, 3}, {407, 3}
+};
+// Air throw moves 130 and 132–134. Blank records preserve the previous pose.
+constexpr skullgirls::NormalFrame air_throw_start[] = {{439, 3}, {440, 4}, {441, 6}};
+constexpr skullgirls::NormalFrame air_throw_whiff[] = {{442, 6}, {443, 4}, {444, 4}};
+constexpr skullgirls::NormalFrame air_throw_capture[] = {
+    {441, 18}, {445, 4}, {446, 4}, {447, 4}, {448, 4}, {449, 4},
+    {450, 6}, {451, 3}, {452, 11}, {453, 5}, {454, 3}
+};
+constexpr skullgirls::NormalFrame air_throw_recovery[] = {
+    {454, 1}, {455, 5}, {456, 5}, {442, 4}, {443, 3}, {444, 4}
+};
+// Throw-tech entry, recoil loops and recovery from moves 125–129 and 135–139.
+constexpr skullgirls::NormalFrame ground_throw_tech[] = {
+    {424, 5}, {425, 4}, {426, 3}, {427, 2}, {428, 2}, {429, 2}, {430, 2}, {431, 2},
+    {432, 3}, {433, 2}, {434, 2}, {432, 3}, {433, 2}, {434, 2}, {432, 3}, {433, 2}, {434, 2},
+    {435, 2}, {436, 2}, {437, 3}, {438, 2}
+};
+constexpr skullgirls::NormalFrame air_throw_tech[] = {
+    {457, 8}, {458, 3}, {459, 3}, {460, 3}, {461, 2}, {462, 2},
+    {460, 3}, {461, 2}, {462, 2}, {463, 3}, {464, 2}, {465, 3}
 };
 
 struct Menu {
@@ -954,21 +992,21 @@ struct Menu {
     std::unique_ptr<Texture> practice_background;
     std::unique_ptr<PracticeScene> practice_scene;
     std::array<Texture, 2> hud_atlas;
-    std::array<std::unique_ptr<Gdiplus::Bitmap>, 2> hud_portraits;
-    enum class CombatEffect { light, medium, heavy, block, pushblock, grab, throw_tech, ground_impact, count };
+    mutable std::map<std::array<int, 5>, std::unique_ptr<Gdiplus::Bitmap>> hud_tiles;
+    mutable std::unique_ptr<Gdiplus::Font> hud_stats_font;
+    std::array<std::array<std::unique_ptr<Gdiplus::Bitmap>, 3>, 2> hud_portraits;
+    enum class CombatEffect {
+        light, medium, heavy, block, pushblock, grab, throw_tech, ground_impact, wall_impact, air_recovery, burst, count
+    };
     struct CombatSpark {
         CombatEffect effect;
         Gdiplus::PointF position;
         unsigned age;
         float scale;
     };
-    struct PracticeHudStats {
-        unsigned life = 15500, last_hit = 0, damage = 0, maximum = 0, hits = 0;
+    struct PracticeLife {
+        unsigned life = 15500;
         float displayed_life = 15500, damage_trail = 15500;
-        unsigned notice_ticks = 0, blocked_hits = 0;
-        const wchar_t* notice = nullptr;
-        std::vector<CombatSpark> sparks;
-        bool combo = false;
 
         void reset_life(unsigned value) {
             life = value;
@@ -984,6 +1022,14 @@ struct Menu {
             damage_trail = std::max(displayed_life, approach(damage_trail, target, 0.09f));
         }
     };
+    struct PracticeHudStats : PracticeLife {
+        unsigned last_hit = 0, damage = 0, maximum = 0, hits = 0;
+        unsigned notice_ticks = 0, blocked_hits = 0;
+        const wchar_t* notice = nullptr;
+        std::vector<CombatSpark> sparks;
+        bool combo = false;
+        std::array<std::uint64_t, skullgirls::filia_snapback + 1> combo_attacks{};
+    };
     std::array<PracticeHudStats, 2> hud_stats{};
     struct HudInputs {
         std::array<unsigned, 12> entries{};
@@ -992,29 +1038,65 @@ struct Menu {
     };
     std::array<HudInputs, 2> hud_inputs{};
     struct RingletSpike {
+        enum class Spin { none, standard, otg };
         float x;
         bool facing_right;
-        unsigned frame = 0, tick = 0;
+        std::uint64_t attack_instance;
+        std::size_t palette_slot;
+        unsigned frame = skullgirls::ringlet_first_pose_frame, tick = 0;
         bool hit = false;
-        unsigned pose = 0;
+        Spin spin = Spin::none;
 
         bool advance() {
-            if (++tick < skullgirls::ringlet_spike_frames[frame].ticks) return true;
+            using namespace skullgirls;
+            if (++tick < ringlet_spike_frames[frame].ticks) return true;
             tick = 0;
-            if (++frame == std::size(skullgirls::ringlet_spike_frames)) return false;
-            const auto sprite = skullgirls::ringlet_spike_frames[frame].sprite;
-            if (sprite) pose = sprite;
-            return true;
+            ++frame;
+            if (frame == 2) frame = 5; // Entry script records advance within the same tick.
+            if (frame == ringlet_spike_clear_frame)
+                frame = spin == Spin::none ? ringlet_dissolve_frame : frame + 1;
+            if (frame == ringlet_short_spin_end && spin != Spin::otg) frame = ringlet_dissolve_frame;
+            return frame != std::size(ringlet_spike_frames);
         }
 
-        unsigned sprite() const { return pose; }
+        unsigned sprite() const { return skullgirls::ringlet_spike_frames[frame].sprite; }
+        bool locks_owner() const { return frame < skullgirls::ringlet_unlock_frame; }
         bool can_hit() const {
             return !hit && frame >= skullgirls::ringlet_spike_arm_frame &&
                 frame < skullgirls::ringlet_spike_clear_frame;
         }
     };
+    struct Tricobezoar {
+        float x, y;
+        bool facing_right;
+        std::uint64_t attack_instance;
+        std::size_t palette_slot;
+        unsigned age = 0;
+
+        // Child 3's Start_ForReal and Loop states, excluding immediate script records.
+        unsigned sprite() const {
+            using namespace skullgirls;
+            if (age < tricobezoar_start_ticks) return age < tricobezoar_charge_ticks ? 1191 : 1192;
+            return 1193 + (age - tricobezoar_start_ticks) / 2 % 8;
+        }
+        bool can_hit() const { return age >= skullgirls::tricobezoar_charge_ticks; }
+        void advance() {
+            using namespace skullgirls;
+            ++age;
+            if (age < tricobezoar_charge_ticks) return;
+            const float forward = facing_right ? 1.0f : -1.0f;
+            if (age == tricobezoar_charge_ticks) {
+                x += 188.0f * forward;
+                y += 87.5f;
+            }
+            const bool initial_launch = age < tricobezoar_start_ticks;
+            x += (initial_launch ? -60.0f : 125.0f / 3.0f) * forward;
+            y += initial_launch ? 45.0f : 25.0f;
+        }
+    };
     struct PracticeFighter {
         float practice_x = 0;
+        std::size_t palette_slot = 0;
         bool practice_left = false, practice_right = false;
         bool dash_facing_right = true;
         // Filia FOIT standing-to-dash conditions at 0x8e30b and 0x8e39b.
@@ -1032,7 +1114,7 @@ struct Menu {
         int walk_direction = 0;
         enum class GroundTransition { none, stand_turn, crouch_turn, backwalk_stop };
         GroundTransition ground_transition = GroundTransition::none;
-        unsigned ground_transition_tick = 0, transition_start_sprite = 0;
+        unsigned ground_transition_tick = 0;
         int ground_facing = 0;
         bool practice_down = false;
         unsigned stance_tick = 0;
@@ -1041,28 +1123,63 @@ struct Menu {
         float jump_height = 0, jump_velocity = 0, jump_horizontal = 0;
         int jump_direction = 0;
         bool jump_facing_right = true;
-        bool air_dash_used = false, double_jump_used = false, super_jump = false;
-        unsigned air_dash_tick = 0, double_jump_tick = 0;
+        bool air_dash_used = false, super_jump = false;
+        unsigned air_dash_tick = 0, air_dash_lockout = 0;
         unsigned fall_tick = 0;
         bool air_dash_fall = false, air_hurt_fall = false;
-        int air_dash_direction = 0;
+        int air_dash_direction = 0, pending_air_dash = 0;
         int normal_input = -1, active_normal = -1;
         unsigned pressed_punches = 0, pressed_kicks = 0;
         unsigned held_attack_buttons = 0;
         struct NormalInput { unsigned buttons; bool down; };
         // Normal transitions in moves 97–116 search age zero through age five.
         std::array<NormalInput, 6> normal_inputs{};
-        float hairball_speed = 0;
+        skullgirls::FoitInputHistory script_inputs{};
+        skullgirls::FoitScriptState script_state{};
+        unsigned script_held_buttons = 0;
+        unsigned next_script_record = 0, script_move_age = 0;
+        struct SpecialCommand {
+            int move = -1;
+            unsigned strength = 0;
+            bool half_circle = false;
+        };
+        struct BufferedSpecial {
+            SpecialCommand command;
+            unsigned ticks;
+            bool facing_right;
+        };
+        std::optional<BufferedSpecial> buffered_special;
+        static constexpr unsigned special_recovery_buffer = 4;
+        float hairball_speed = 0, airball_lift = 0;
         unsigned hairball_roll_ticks = 0, updo_flight_ticks = 0;
+        bool airball_dash_cancelled = false, airball_used = false;
+        unsigned airball_hits = 0, airball_blocks = 0;
+        unsigned taunt_step = 0, taunt_ticks = 0;
+        unsigned blockbuster_ticks = 0;
+        bool fenrir_connected = false;
+        bool fenrir_captured = false;
         unsigned ringlet_strength = 0, ringlet_entry_ticks = 0;
         std::vector<RingletSpike> ringlet_spikes;
+        bool ringlet_locked() const {
+            return std::any_of(ringlet_spikes.begin(), ringlet_spikes.end(),
+                [](const RingletSpike& spike) { return spike.locks_owner(); });
+        }
+        std::optional<Tricobezoar> tricobezoar;
+        unsigned tension = 5;
         int queued_followup = -1;
         unsigned normal_frame = 0, normal_tick = 0, normal_pose = 0;
         bool normal_facing_right = true, normal_contact = false, rapid_jab_whiff = false;
+        bool normal_hit_landed = false;
         const skullgirls::NormalHit* normal_hit = nullptr;
         const skullgirls::NormalHit* last_contact = nullptr;
         unsigned hit_stop = 0, hurt_frame = 0, hurt_tick = 0, hurt_hold = 0;
         unsigned blockstun = 0;
+        enum class GuardStance { standing, crouching, airborne };
+        enum class GuardPhase { none, entering, idle, leaving, stun, pushblock };
+        GuardStance guard_stance = GuardStance::standing;
+        GuardPhase guard_phase = GuardPhase::none;
+        unsigned guard_tick = 0, guard_pose = 0;
+        bool guard_special_height = false;
         int hurt_group = -1;
         skullgirls::HurtPhase hurt_phase = skullgirls::hurt_entry;
         skullgirls::HurtHeight hurt_height = skullgirls::HurtHeight::mid;
@@ -1070,25 +1187,44 @@ struct Menu {
         skullgirls::HeavyReaction::Type heavy_reaction = skullgirls::HeavyReaction::none;
         float recoil_x = 0;
         unsigned recoil_ticks = 0;
+        unsigned reaction_phase = 0;
+        unsigned wall_bounce_tick = 0;
         bool recoil_landed = false, waking_up = false;
+        int ground_tech_direction = 0;
         int striking_normal = -1;
+        std::uint64_t attack_instance = 0;
+        bool burst_available = false;
+        unsigned burst_ticks = 0;
+        unsigned burst_fall_tick = 0;
+        bool burst_connected = false;
         bool throw_input = false;
         bool throw_facing_right = true;
+        bool aerial_throw = false;
+        bool forward_ground_throw = false;
         unsigned throw_tick = 0;
-        enum class ThrowPhase { none, start, whiff, capture, recovery, grabbed };
+        enum class ThrowPhase { none, start, whiff, capture, recovery, grabbed, tech };
         ThrowPhase throw_phase = ThrowPhase::none;
+        unsigned tag_entry_ticks = 0;
+        unsigned snapback_reserve = 0;
 
         void take_hit(const skullgirls::NormalHit& hit, bool facing_right, int move,
                       skullgirls::HeavyReaction forced = {}) {
             const auto reaction = forced.type != skullgirls::HeavyReaction::none ? forced :
                 skullgirls::filia_heavy_reaction(move, jump_height > 0);
             throw_phase = ThrowPhase::none;
+            tag_entry_ticks = 0;
+            fenrir_captured = false;
             blockstun = 0;
+            guard_phase = GuardPhase::none;
+            burst_ticks = burst_fall_tick = 0;
             heavy_reaction = reaction.type;
             recoil_x = facing_right ? -reaction.horizontal : reaction.horizontal;
             recoil_ticks = 0;
+            reaction_phase = 0;
+            wall_bounce_tick = 0;
             recoil_landed = false;
             waking_up = false;
+            ground_tech_direction = 0;
             if (heavy_reaction != skullgirls::HeavyReaction::none)
                 jump_velocity = reaction.upward;
             hurt_height = hit.reaction_height();
@@ -1102,23 +1238,144 @@ struct Menu {
             const unsigned impact_pose = heavy_reaction == skullgirls::HeavyReaction::ground_bounce ? 785 :
                 heavy_reaction == skullgirls::HeavyReaction::knockback ? skullgirls::filia_knockback_start[0].sprite :
                 heavy_reaction == skullgirls::HeavyReaction::sweep ? skullgirls::filia_front_fall_start[0].sprite :
+                heavy_reaction == skullgirls::HeavyReaction::sliding ? 769 :
+                heavy_reaction == skullgirls::HeavyReaction::ceiling_bounce ? 788 :
+                heavy_reaction == skullgirls::HeavyReaction::crumple ? 794 :
+                heavy_reaction == skullgirls::HeavyReaction::stagger ? 816 :
+                heavy_reaction == skullgirls::HeavyReaction::freeze ? 826 :
                 skullgirls::filia_hurt[hurt_group][hurt_phase][0].sprite;
             if (impact_pose) movement_sprite = impact_pose;
             active_normal = normal_input = -1;
             queued_followup = -1;
             normal_inputs = {};
+            buffered_special.reset();
             normal_hit = nullptr;
             dash_direction = air_dash_direction = 0;
-            jump_start = double_jump_tick = landing = walk_tick = 0;
+            jump_start = landing = walk_tick = 0;
+            pending_air_dash = 0;
             air_hurt_fall = false;
             ground_transition = GroundTransition::none;
             walk_direction = 0;
         }
 
-        void tick_hurt(float left, float right) {
+        bool advance_extra_reaction(float left, float right, float ceiling) {
+            using namespace skullgirls;
+            using Reaction = HeavyReaction;
+            const auto next_phase = [&] {
+                ++reaction_phase;
+                recoil_ticks = 0;
+            };
+            const auto play = [&](DefenseClip clip) {
+                movement_sprite = clip.pose_at(recoil_ticks++, movement_sprite);
+                if (recoil_ticks < clip.duration()) return false;
+                next_phase();
+                return true;
+            };
+            const auto move = [&](float gravity) {
+                practice_x = std::clamp(practice_x + recoil_x, left, right);
+                jump_height = std::max(0.0f, jump_height + jump_velocity);
+                jump_velocity = jump_height > 0 ? jump_velocity - gravity : 0.0f;
+            };
+            const auto finish = [&] {
+                hurt_group = -1;
+                heavy_reaction = Reaction::none;
+                crouching = rising = false;
+                stance_tick = 0;
+                if (jump_height > 0) {
+                    jump_direction = 0;
+                    jump_horizontal = 0;
+                    air_hurt_fall = true;
+                    jump_facing_right = hurt_facing_right;
+                    fall_tick = 0;
+                }
+            };
+            switch (heavy_reaction) {
+            case Reaction::sliding:
+                if (reaction_phase < 2) {
+                    play(reaction_phase ? DefenseClip(slide_flight) : DefenseClip(slide_start));
+                    if (reaction_phase == 2) reaction_phase = 1;
+                    move(1.0f / 3);
+                    if (!jump_height) {
+                        reaction_phase = 2;
+                        recoil_ticks = 0;
+                    }
+                } else if (reaction_phase == 2) {
+                    const auto clip = DefenseClip(slide_loop);
+                    const unsigned tick = recoil_ticks++;
+                    movement_sprite = clip.pose_at(tick % clip.duration(), movement_sprite);
+                    move(0);
+                    recoil_x *= 0.8f;
+                    if (!hurt_hold && recoil_ticks >= clip.duration()) next_phase();
+                } else if (reaction_phase == 3) {
+                    if (play(slide_end)) {
+                        heavy_reaction = Reaction::back_knockdown;
+                        recoil_landed = waking_up = true;
+                    }
+                }
+                return true;
+            case Reaction::ceiling_bounce:
+                if (reaction_phase < 2) {
+                    play(reaction_phase ? DefenseClip(ceiling_rise) : DefenseClip(ceiling_start));
+                    if (reaction_phase == 2) reaction_phase = 1;
+                    move(1.0f / 3);
+                    if (jump_height >= ceiling || jump_velocity <= 0) {
+                        jump_height = std::min(jump_height, ceiling);
+                        jump_velocity = -std::abs(jump_velocity);
+                        recoil_x *= 0.5f;
+                        reaction_phase = 2;
+                        recoil_ticks = 0;
+                    }
+                } else if (reaction_phase == 2) {
+                    play(ceiling_impact);
+                    move(1.0f);
+                } else if (reaction_phase == 3) {
+                    constexpr DefenseClip fall{ceiling_fall};
+                    movement_sprite = fall.pose_at(recoil_ticks++ % fall.duration(), movement_sprite);
+                    move(1.0f);
+                    if (!jump_height) {
+                        next_phase();
+                        recoil_x = hurt_facing_right ? -4.0f : 4.0f;
+                        jump_velocity = 20.0f;
+                    }
+                } else {
+                    move(1.0f);
+                    if (play(ceiling_land)) heavy_reaction = Reaction::launch;
+                }
+                return true;
+            case Reaction::crumple:
+                move(1.0f);
+                if (reaction_phase == 0) play(crumple_start);
+                else if (reaction_phase == 1) play(crumple_crouch);
+                else if (play(crumple_fall)) {
+                    heavy_reaction = Reaction::sweep;
+                    recoil_landed = waking_up = true;
+                    recoil_ticks = 8; // Enter the face-down floor hold in move 267.
+                }
+                return true;
+            case Reaction::stagger:
+                if (reaction_phase == 0) {
+                    constexpr DefenseClip loop{stagger_loop};
+                    movement_sprite = loop.pose_at(recoil_ticks++ % loop.duration(), movement_sprite);
+                    if (!hurt_hold && recoil_ticks >= loop.duration()) next_phase();
+                } else if (play(stagger_end)) finish();
+                move(1.0f);
+                return true;
+            case Reaction::freeze:
+                if (reaction_phase == 0) {
+                    movement_sprite = DefenseClip(freeze_loop).pose_at(recoil_ticks++, movement_sprite);
+                    if (!hurt_hold) next_phase();
+                } else if (play(freeze_end)) finish();
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        void tick_hurt(float left, float right, bool tech_pressed, float ceiling) {
             using Reaction = skullgirls::HeavyReaction;
-            if (heavy_reaction != Reaction::none) {
+            if (heavy_reaction != Reaction::none && heavy_reaction != Reaction::air_launch) {
                 if (hurt_hold) --hurt_hold;
+                if (advance_extra_reaction(left, right, ceiling)) return;
                 const auto pose = [](const auto& frames, unsigned tick) {
                     for (const auto& frame : frames) {
                         if (tick < frame.ticks) return frame.sprite;
@@ -1130,14 +1387,60 @@ struct Menu {
                     practice_x = std::clamp(practice_x + recoil_x, left, right);
                     jump_height = std::max(0.0f, jump_height + jump_velocity);
                 };
+                if (heavy_reaction == Reaction::wall_bounce) {
+                    using namespace skullgirls;
+                    if (!wall_bounce_tick) {
+                        const unsigned tick = recoil_ticks++;
+                        movement_sprite = pose(filia_wall_fly, tick < 9 ? tick : 9 + (tick - 9) % 12);
+                        const float destination = practice_x + recoil_x;
+                        move_recoil();
+                        if ((recoil_x < 0 && destination <= left) || (recoil_x > 0 && destination >= right)) {
+                            wall_bounce_tick = 1;
+                            jump_height = std::max(jump_height, 1.0f);
+                            return;
+                        }
+                        if (jump_height > 0) {
+                            jump_velocity -= 1.0f;
+                            return;
+                        }
+                        recoil_landed = true;
+                        recoil_ticks = 0;
+                        jump_velocity = 0;
+                    } else {
+                        const unsigned tick = wall_bounce_tick++;
+                        if (tick <= filia_wall_impact_ticks) {
+                            if (tick > 4) movement_sprite = 773;
+                            return;
+                        }
+                        if (tick == filia_wall_impact_ticks + 1) {
+                            recoil_x *= -0.8f;
+                            jump_velocity += 8.0f;
+                        }
+                        movement_sprite = pose(filia_wall_exit, tick - filia_wall_impact_ticks - 1);
+                        move_recoil();
+                        if (jump_height > 0 && movement_sprite) {
+                            jump_velocity -= 1.0f;
+                            return;
+                        }
+                        recoil_landed = jump_height == 0;
+                        recoil_ticks = recoil_landed ? 0 : 9;
+                        if (recoil_landed) jump_velocity = 0;
+                    }
+                    movement_sprite = recoil_landed ? 752 : 759;
+                    heavy_reaction = Reaction::sweep;
+                    return;
+                }
                 if (heavy_reaction == Reaction::ground_bounce) {
-                    if (!recoil_ticks) {
+                    if (!recoil_landed) {
                         if (jump_height > 0) move_recoil();
                         if (jump_height > 0) {
                             jump_velocity -= 1.0f;
-                            movement_sprite = 785;
+                            constexpr skullgirls::DefenseClip flight{skullgirls::floorbounce_flight};
+                            movement_sprite = flight.pose_at(recoil_ticks++ % flight.duration(), movement_sprite);
                             return;
                         }
+                        recoil_landed = true;
+                        recoil_ticks = 0;
                         jump_velocity *= -0.5f;
                     }
                     movement_sprite = pose(skullgirls::filia_ground_bounce, recoil_ticks++);
@@ -1145,6 +1448,7 @@ struct Menu {
                     jump_velocity -= 1.0f;
                     if (recoil_ticks == skullgirls::filia_ground_bounce_ticks) {
                         heavy_reaction = Reaction::launch;
+                        recoil_landed = false;
                         recoil_ticks = 0;
                     }
                     return;
@@ -1161,13 +1465,16 @@ struct Menu {
                         recoil_landed = true;
                         jump_velocity = 0;
                         recoil_ticks = 0;
-                        if (heavy_reaction == Reaction::launch) heavy_reaction = Reaction::back_knockdown;
+                        if (heavy_reaction == Reaction::launch)
+                            heavy_reaction = Reaction::back_knockdown;
                     } else if (heavy_reaction == Reaction::launch) {
                         return;
                     }
                 }
                 const bool front = heavy_reaction == Reaction::sweep;
                 const bool back = heavy_reaction == Reaction::back_knockdown;
+                const unsigned rebound_tick = back ? skullgirls::filia_back_rebound_tick :
+                    skullgirls::filia_floor_rebound_tick;
                 if (!recoil_landed) {
                     const unsigned tick = recoil_ticks++;
                     movement_sprite = front ? pose(skullgirls::filia_front_fall_start, tick) :
@@ -1178,10 +1485,45 @@ struct Menu {
                     }
                     return;
                 }
+                if (tech_pressed && !waking_up && recoil_ticks <= rebound_tick && !jump_height && !jump_velocity) {
+                    ground_tech_direction = int(practice_right) - int(practice_left);
+                    if (ground_tech_direction) {
+                        buffered_special.reset();
+                        waking_up = true;
+                        recoil_ticks = 0;
+                        recoil_x = 0;
+                    }
+                }
+                if (ground_tech_direction) {
+                    using namespace skullgirls;
+                    const bool forward = (ground_tech_direction > 0) == hurt_facing_right;
+                    const auto& motion = ground_tech_motion[back][forward];
+                    constexpr DefenseClip recovery{ground_tech_recovery};
+                    const unsigned tick = recoil_ticks++;
+                    const unsigned roll_ticks = motion.roll.duration();
+                    if (tick < roll_ticks) {
+                        if (tick == motion.roll.record_tick(motion.launch_record)) {
+                            recoil_x = ground_tech_direction * motion.horizontal;
+                            jump_velocity = motion.upward;
+                        }
+                        if (tick == motion.roll.record_tick(motion.brake_record)) recoil_x *= 0.5f;
+                        move_recoil();
+                        jump_velocity = jump_height > 0 ? jump_velocity - motion.gravity : 0.0f;
+                        movement_sprite = motion.roll.pose_at(tick, movement_sprite);
+                    } else {
+                        movement_sprite = recovery.pose_at(tick - roll_ticks, movement_sprite);
+                    }
+                    if (recoil_ticks == roll_ticks + recovery.duration()) {
+                        ground_tech_direction = 0;
+                        heavy_reaction = Reaction::none;
+                        hurt_group = -1;
+                        crouching = rising = false;
+                        stance_tick = 0;
+                    }
+                    return;
+                }
                 if (!waking_up) {
                     const unsigned tick = recoil_ticks++;
-                    const unsigned rebound_tick = back ? skullgirls::filia_back_rebound_tick :
-                        skullgirls::filia_floor_rebound_tick;
                     if (tick < rebound_tick) {
                         const unsigned sprite = back ? pose(skullgirls::filia_back_impact, tick) :
                             pose(skullgirls::filia_floor_impact, tick);
@@ -1238,6 +1580,8 @@ struct Menu {
                 }
             }
             if (jump_height > 0 || jump_velocity > 0) {
+                if (heavy_reaction == Reaction::air_launch)
+                    practice_x = std::clamp(practice_x + recoil_x, left, right);
                 jump_height = std::max(0.0f, jump_height + jump_velocity);
                 jump_velocity = jump_height > 0 ? jump_velocity - 1.0f : 0.0f;
                 if (jump_height == 0 && group == skullgirls::air_mid) {
@@ -1254,53 +1598,96 @@ struct Menu {
             }
             if (!hurt_hold) {
                 hurt_group = -1;
+                heavy_reaction = Reaction::none;
                 if (group == skullgirls::air_mid && jump_height > 0) {
                     // Air recovery 201/202 reaches move 83 via 94.
                     air_hurt_fall = true;
                     air_dash_fall = false;
-                    fall_tick = 0;
+                    movement_sprite = 181;
+                    fall_tick = 1;
                     jump_direction = 0;
                     jump_facing_right = hurt_facing_right;
+                    jump_horizontal = 0;
                 }
             }
         }
 
 
         void advance_throw() {
-            const auto play = [&](const auto& frames) {
-                unsigned tick = throw_tick++;
-                for (const auto& frame : frames) {
-                    if (tick < frame.ticks) {
-                        movement_sprite = frame.sprite;
-                        return true;
-                    }
-                    tick -= frame.ticks;
+            const auto play = [&](skullgirls::DefenseClip clip) {
+                if (throw_tick >= clip.duration()) {
+                    throw_tick = 0;
+                    return false;
                 }
-                throw_tick = 0;
-                return false;
+                movement_sprite = clip.pose_at(throw_tick++, movement_sprite);
+                return true;
             };
+            const skullgirls::DefenseClip capture_common{throw_capture_common};
             switch (throw_phase) {
             case ThrowPhase::start:
-                if (!play(throw_start)) {
+                if (!(aerial_throw ? play(air_throw_start) : play(throw_start))) {
                     throw_phase = ThrowPhase::whiff;
-                    play(throw_whiff);
+                    if (aerial_throw) play(air_throw_whiff);
+                    else play(throw_whiff);
                 }
                 break;
             case ThrowPhase::whiff:
-                if (!play(throw_whiff)) throw_phase = ThrowPhase::none;
+                if (!(aerial_throw ? play(air_throw_whiff) : play(throw_whiff))) throw_phase = ThrowPhase::none;
                 break;
             case ThrowPhase::capture:
-                if (!play(throw_capture)) {
+                if (!aerial_throw && throw_tick < capture_common.duration()) {
+                    play(capture_common);
+                    break;
+                }
+                if (!aerial_throw) {
+                    const skullgirls::DefenseClip tail = forward_ground_throw ? throw_capture_forward : throw_capture_back;
+                    const auto tick = throw_tick - capture_common.duration();
+                    if (tick < tail.duration()) {
+                        if (forward_ground_throw && tick == throw_capture_forward[0].ticks)
+                            throw_facing_right = !throw_facing_right;
+                        movement_sprite = tail.pose_at(tick, movement_sprite);
+                        ++throw_tick;
+                        break;
+                    }
+                    throw_tick = 0;
+                }
+                if (!aerial_throw || !play(air_throw_capture)) {
                     throw_phase = ThrowPhase::recovery;
-                    play(throw_recovery);
+                    if (aerial_throw) play(air_throw_recovery);
+                    else play(throw_recovery);
                 }
                 break;
             case ThrowPhase::recovery:
-                if (!play(throw_recovery)) throw_phase = ThrowPhase::none;
+                if (!(aerial_throw ? play(air_throw_recovery) : play(throw_recovery))) throw_phase = ThrowPhase::none;
+                break;
+            case ThrowPhase::tech:
+                if (!(aerial_throw ? play(air_throw_tech) : play(ground_throw_tech))) throw_phase = ThrowPhase::none;
                 break;
             default: break;
             }
-            if (throw_phase == ThrowPhase::none) movement_sprite = 0;
+            if (throw_phase == ThrowPhase::none && (!aerial_throw || !jump_height)) movement_sprite = 0;
+        }
+
+        void move_during_throw(float left, float right) {
+            if (throw_phase == ThrowPhase::tech) {
+                const unsigned recoil_start = aerial_throw ? 11 : 22;
+                if (throw_tick > recoil_start) {
+                    const float recoil = std::max(0.0f, (aerial_throw ? 18.0f : 15.0f) -
+                        float(throw_tick - recoil_start - 1));
+                    practice_x = std::clamp(practice_x + (throw_facing_right ? -recoil : recoil), left, right);
+                }
+            }
+            if (!aerial_throw || throw_phase == ThrowPhase::grabbed || throw_phase == ThrowPhase::capture) return;
+            if (throw_phase == ThrowPhase::tech && throw_tick == 12) jump_velocity = -10;
+            jump_height = std::max(0.0f, jump_height + jump_velocity);
+            jump_velocity = jump_height > 0 ? jump_velocity - 1.0f : 0.0f;
+            if (throw_phase == ThrowPhase::none) {
+                jump_facing_right = throw_facing_right;
+                if (!jump_height) {
+                    movement_sprite = 113;
+                    landing = 1;
+                }
+            }
         }
 
         bool update_dash_input(int horizontal, bool airborne) {
@@ -1311,59 +1698,454 @@ struct Menu {
             return skullgirls::filia_double_tap(dash_input_history, horizontal, airborne);
         }
 
-        void tick(float opponent_x, float left, float right, bool faces_right_at_tie) {
+        int prepare_special(const SpecialCommand& command, bool airborne) {
+            if (command.move == skullgirls::ground_hairball || command.move == skullgirls::air_hairball) {
+                constexpr float ground_speed[] = {18, 22, 23};
+                constexpr float air_lift[] = {6, 0, -8};
+                constexpr unsigned ground_roll_ticks[] = {11, 17, 29};
+                hairball_speed = airborne ? 22.0f : ground_speed[command.strength];
+                hairball_roll_ticks = airborne ? 17 : ground_roll_ticks[command.strength];
+                airball_lift = air_lift[command.strength];
+            } else if (command.move == skullgirls::ringlet_spike) {
+                ringlet_strength = command.strength;
+                ringlet_entry_ticks = command.half_circle ? skullgirls::ringlet_half_entry_ticks :
+                    skullgirls::ringlet_quarter_entry_ticks;
+            }
+            return command.move;
+        }
+
+        void update_script_inputs(unsigned direction, unsigned edges) {
+            const unsigned held = held_attack_buttons & 63u;
+            std::move_backward(script_inputs.begin(), script_inputs.end() - 1, script_inputs.end());
+            script_inputs.front() = skullgirls::foit_input_sample(direction, edges, held,
+                script_held_buttons & ~held);
+            script_held_buttons = held | edges;
+            script_move_age = std::min(script_move_age + 1, unsigned(script_inputs.size()));
+        }
+
+        template <class Accept>
+        int script_transition(const skullgirls::FoitMoveTable& moves, unsigned source, bool facing,
+                              Accept accept, unsigned oldest_trigger = skullgirls::FoitInputHistory{}.size() - 1) const {
+            const auto& transitions = moves.transitions.at(source);
+            for (const auto& transition : transitions) {
+                if (accept(transition.target) && skullgirls::match_foit_condition(
+                        transition.condition, script_inputs, facing, script_state, oldest_trigger))
+                    return transition.target;
+            }
+            return -1;
+        }
+
+        int airball_dash_transition(const skullgirls::FoitMoveTable& moves) {
+            script_state.variables[0x01] = static_cast<float>(airball_hits);
+            script_state.variables[0x02] = static_cast<float>(airball_blocks);
+            script_state.variables[0x3a] = 0.0f;
+            script_state.variables[0x7d] = air_dash_used ? 0.0f : 1.0f;
+            script_state.variables[0x80] = static_cast<float>(air_dash_lockout);
+            if (!script_state.bits[64].has_value()) script_state.bits[64] = false;
+            return script_transition(moves, 157, normal_facing_right,
+                [](unsigned move) { return move >= 158 && move <= 160; });
+        }
+
+        unsigned apply_normal_script(const skullgirls::FoitMoveTable& moves) {
+            const auto& records = moves.animations[skullgirls::filia_foit_normals[active_normal]];
+            const auto apply = [&](const auto& expressions) {
+                for (const auto& expression : expressions) {
+                    const auto dst = expression.destination.value;
+                    if ((expression.destination.flags == 1 && (dst == 0x7f || dst == 0xae || dst == 0xb0)) ||
+                        (expression.destination.flags == 0x20 && dst == 0))
+                        skullgirls::apply_foit_assignment(expression, script_state);
+                }
+            };
+            unsigned ticks = skullgirls::filia_normals[active_normal][normal_frame].ticks;
+            for (auto record = std::min(next_script_record, normal_frame);
+                 record <= normal_frame && record < records.size(); ++record) {
+                apply(records[record].script);
+                for (const auto& variant : records[record].variants) {
+                    if (!skullgirls::match_foit_condition(variant.condition, script_inputs,
+                                                        normal_facing_right, script_state)) continue;
+                    apply(variant.script);
+                    if (record == normal_frame && variant.duration) ticks = *variant.duration;
+                }
+            }
+            next_script_record = normal_frame + 1;
+            return ticks;
+        }
+
+        bool sample_taunt(unsigned punches, unsigned kicks, bool forward_edge, bool airborne) {
+            if (airborne || (taunt_ticks && !--taunt_ticks)) taunt_step = taunt_ticks = 0;
+            if (airborne) return false;
+            if (taunt_step == 1 && (punches & 2u)) ++taunt_step;
+            else if (taunt_step == 2 && forward_edge) ++taunt_step;
+            else if (taunt_step >= 3 && (kicks & 2u)) {
+                if (++taunt_step == 5) {
+                    taunt_step = taunt_ticks = 0;
+                    return true;
+                }
+            } else if (punches & 1u) {
+                taunt_step = 1;
+                taunt_ticks = 55;
+            }
+            return false;
+        }
+
+        int blockbuster_successor() const {
+            using namespace skullgirls;
+            switch (active_normal) {
+            case gregor_start: return gregor_loop;
+            case gregor_air_start: return gregor_air_loop;
+            case gregor_loop: case gregor_air_loop:
+                return blockbuster_ticks < 31 ? active_normal : active_normal + 1;
+            case gregor_end: return gregor_skid;
+            case gregor_skid: return gregor_stop;
+            case gregor_air_end: return gregor_fall;
+            case gregor_fall: return gregor_fall_loop;
+            case gregor_fall_loop: return gregor_fall_loop;
+            case fenrir_start: return fenrir_rise;
+            case fenrir_rise:
+                return jump_velocity > 0 ? fenrir_rise : fenrir_connected ? fenrir_peak_hit : fenrir_peak;
+            case fenrir_peak: return fenrir_connected ? fenrir_peak_hit : fenrir_fall;
+            case fenrir_peak_hit: return fenrir_bite_wait;
+            case fenrir_bite_wait: return fenrir_bite;
+            case fenrir_bite: return fenrir_dive;
+            case fenrir_dive: return fenrir_dive;
+            default: return -1;
+            }
+        }
+
+        void enter_blockbuster_phase(int move) {
+            if (move != active_normal) blockbuster_ticks = 0;
+            active_normal = move;
+            normal_frame = move == skullgirls::fenrir_fall ? skullgirls::fenrir_fall_start : 0;
+            normal_tick = 0;
+            last_contact = nullptr;
+        }
+
+        float move_blockbuster_air() {
+            using namespace skullgirls;
+            float forward = 0;
+            if ((active_normal == gregor_start && normal_frame >= 44) ||
+                (active_normal == gregor_air_start && normal_frame >= 32) ||
+                active_normal == gregor_loop || active_normal == gregor_air_loop) forward = 35;
+            if (active_normal == gregor_end || active_normal == gregor_air_end) forward = 28;
+            if (active_normal == gregor_skid) forward = std::max(0.0f, 28.0f - blockbuster_ticks * 3.0f);
+            if (active_normal == fenrir_start && normal_frame == 23 && !normal_tick) jump_velocity = 42;
+            if (active_normal == fenrir_start || active_normal == fenrir_rise) forward = jump_velocity > 0 ? 5 : 0;
+            if (active_normal == fenrir_bite && normal_frame == 7 && !normal_tick) jump_velocity = -12;
+            if (active_normal == fenrir_dive) {
+                jump_velocity = -18;
+                forward = 18;
+            }
+            const bool suspended = active_normal == gregor_air_start || active_normal == gregor_air_loop ||
+                active_normal == gregor_air_end || active_normal == fenrir_peak_hit ||
+                active_normal == fenrir_bite_wait || (active_normal == fenrir_bite && normal_frame < 7);
+            if (!suspended && (jump_height > 0 || jump_velocity > 0)) {
+                jump_height = std::max(0.0f, jump_height + jump_velocity);
+                jump_velocity = jump_height ? jump_velocity - 2.0f : 0.0f;
+            }
+            if (!jump_height && (active_normal == gregor_fall || active_normal == gregor_fall_loop))
+                enter_blockbuster_phase(gregor_land);
+            if (!jump_height && active_normal == fenrir_dive) enter_blockbuster_phase(fenrir_land);
+            if (!jump_height && jump_velocity <= 0 && active_normal == fenrir_fall &&
+                normal_frame < fenrir_whiff_landing) {
+                normal_frame = fenrir_whiff_landing;
+                normal_tick = 0;
+            }
+            return normal_facing_right ? forward : -forward;
+        }
+
+        static constexpr skullgirls::DefenseClip burst_clip{skullgirls::burst_animation};
+        static constexpr unsigned burst_first_hit_tick = burst_clip.record_tick(7);
+        static constexpr unsigned burst_end_hit_tick = burst_clip.record_tick(16);
+
+        bool burst_protected() const {
+            return burst_ticks > burst_clip.duration() - 12;
+        }
+
+        bool burst_can_hit() const {
+            const unsigned elapsed = burst_clip.duration() - burst_ticks;
+            return !burst_connected && elapsed > burst_first_hit_tick && elapsed <= burst_end_hit_tick;
+        }
+
+        bool advance_burst_animation(float left, float right) {
+            using namespace skullgirls;
+            if (!burst_ticks && !burst_fall_tick) return false;
+            normal_input = -1;
+            throw_input = false;
+            pressed_punches = pressed_kicks = 0;
+            if (hit_stop) {
+                --hit_stop;
+                return true;
+            }
+            if (burst_ticks) {
+                const unsigned tick = burst_clip.duration() - burst_ticks--;
+                movement_sprite = burst_clip.pose_at(tick, movement_sprite);
+                // Move 406 record 7 writes backward speed 27 and lift 25.
+                if (tick == burst_first_hit_tick) {
+                    recoil_x = hurt_facing_right ? -27.0f : 27.0f;
+                    jump_velocity = 25.0f;
+                }
+                if (tick >= burst_first_hit_tick && (jump_height > 0 || jump_velocity > 0)) {
+                    practice_x = std::clamp(practice_x + recoil_x, left, right);
+                    jump_height = std::max(0.0f, jump_height + jump_velocity);
+                    jump_velocity = jump_height > 0 ? jump_velocity - 1.0f : 0.0f;
+                }
+                if (!burst_ticks && jump_height > 0) burst_fall_tick = 1;
+                return true;
+            }
+            constexpr DefenseClip fall{burst_fall};
+            constexpr DefenseClip loop{burst_fall_loop};
+            const unsigned tick = burst_fall_tick++ - 1;
+            movement_sprite = tick < fall.duration() ? fall.pose_at(tick, movement_sprite) :
+                loop.pose_at((tick - fall.duration()) % loop.duration(), movement_sprite);
+            jump_height = std::max(0.0f, jump_height + jump_velocity);
+            jump_velocity -= 1.0f;
+            if (!jump_height) {
+                jump_velocity = 0;
+                movement_sprite = 113;
+                landing = 1;
+                burst_fall_tick = 0;
+            }
+            return true;
+        }
+
+        skullgirls::DefenseClip pushblock_clip() const {
+            using namespace skullgirls;
+            switch (guard_stance) {
+            case GuardStance::standing: return stand_pushblock;
+            case GuardStance::crouching: return crouch_pushblock;
+            case GuardStance::airborne: return air_pushblock;
+            }
+            return stand_pushblock;
+        }
+
+        bool guard_locked() const {
+            if (blockstun) return true;
+            if (guard_phase != GuardPhase::pushblock) return false;
+            const auto clip = pushblock_clip();
+            // The final FOIT record holds until the gameplay state exits.
+            return guard_tick < clip.duration() - clip.frames[clip.size - 1].ticks + 1;
+        }
+
+        void begin_guard_stun(bool airborne, bool low, unsigned height, bool facing_right) {
+            guard_stance = airborne ? GuardStance::airborne :
+                low ? GuardStance::crouching : GuardStance::standing;
+            guard_special_height = low ? height == 2 : height == 1;
+            guard_phase = GuardPhase::stun;
+            guard_tick = 0;
+            hurt_facing_right = facing_right;
+            movement_sprite = guard_pose = airborne ? 909 :
+                low ? (guard_special_height ? 900 : 902) : (guard_special_height ? 889 : 892);
+        }
+
+        void advance_guard_stun() {
+            using namespace skullgirls;
+            const unsigned tick = guard_tick++;
+            unsigned pose = guard_pose;
+            if (guard_phase == GuardPhase::pushblock) {
+                pose = pushblock_clip().pose_at(tick, pose);
+            } else if (guard_stance == GuardStance::airborne) {
+                constexpr DefenseClip start{air_stun_start};
+                constexpr DefenseClip loop{air_stun_loop};
+                pose = tick < start.duration() ? start.pose_at(tick, pose) :
+                    loop.pose_at((tick - start.duration()) % loop.duration(), pose);
+            } else if (tick >= 2) {
+                const DefenseClip loop = guard_stance == GuardStance::crouching ?
+                    (guard_special_height ? DefenseClip(crouch_low_stun) : DefenseClip(crouch_mid_stun)) :
+                    (guard_special_height ? DefenseClip(stand_high_stun) : DefenseClip(stand_mid_stun));
+                pose = loop.pose_at((tick - 2) % loop.duration(), pose);
+            }
+            movement_sprite = guard_pose = pose;
+        }
+
+        void advance_guard_pose(bool wants_guard, bool facing_right) {
+            using namespace skullgirls;
+            if (active_normal >= 0 || hurt_group >= 0 || hit_stop || throw_phase != ThrowPhase::none ||
+                fenrir_captured || jump_start || dash_direction || air_dash_direction ||
+                landing || tag_entry_ticks || burst_ticks || burst_fall_tick ||
+                (movement_sprite >= 920 && movement_sprite <= 932)) {
+                guard_phase = GuardPhase::none;
+                return;
+            }
+            if (!wants_guard && guard_phase == GuardPhase::none) return;
+            const auto stance = jump_height > 0 ? GuardStance::airborne :
+                practice_down ? GuardStance::crouching : GuardStance::standing;
+            const auto start = [&](GuardPhase phase) {
+                if (guard_phase == GuardPhase::none) guard_pose = sprite();
+                guard_phase = phase;
+                guard_tick = 0;
+            };
+            if (wants_guard) {
+                if (guard_phase == GuardPhase::none || guard_phase == GuardPhase::leaving ||
+                    stance != guard_stance || facing_right != hurt_facing_right)
+                    start(GuardPhase::entering);
+                else if (guard_phase == GuardPhase::stun || guard_phase == GuardPhase::pushblock)
+                    start(GuardPhase::idle);
+                guard_stance = stance;
+                hurt_facing_right = facing_right;
+            } else if (guard_phase != GuardPhase::leaving) {
+                start(GuardPhase::leaving);
+            }
+            struct GuardClips { DefenseClip enter, idle, leave; };
+            constexpr GuardClips clips[] = {
+                {stand_preblock, stand_guard, stand_postblock},
+                {crouch_preblock, crouch_guard, crouch_postblock},
+                {air_preblock, air_guard, air_postblock},
+            };
+            const auto& set = clips[static_cast<unsigned>(guard_stance)];
+            const auto clip = guard_phase == GuardPhase::entering ? set.enter :
+                guard_phase == GuardPhase::leaving ? set.leave : set.idle;
+            movement_sprite = guard_pose = clip.pose_at(guard_tick++, guard_pose);
+            if (guard_tick == clip.duration()) {
+                if (guard_phase == GuardPhase::leaving) guard_phase = GuardPhase::none;
+                else start(GuardPhase::idle);
+            }
+        }
+
+        void tick(float opponent_x, float left, float right, bool faces_right_at_tie, float ceiling = 600.0f,
+                  const skullgirls::FoitMoveTable* scripts = nullptr) {
             normal_hit = nullptr;
             striking_normal = -1;
+            if (fenrir_captured || throw_phase != ThrowPhase::none) {
+                tag_entry_ticks = 0;
+                burst_ticks = burst_fall_tick = 0;
+                guard_phase = GuardPhase::none;
+            }
+            if (tag_entry_ticks) {
+                constexpr auto duration = skullgirls::team_animation_ticks(skullgirls::tag_in_taunt);
+                movement_sprite = skullgirls::team_animation_sprite(skullgirls::tag_in_taunt,
+                    duration - tag_entry_ticks--, 365);
+                normal_input = -1;
+                throw_input = false;
+                pressed_punches = pressed_kicks = 0;
+                return;
+            }
+            if (advance_burst_animation(left, right)) return;
+            if (buffered_special && !--buffered_special->ticks) buffered_special.reset();
             const bool wants_throw = std::exchange(throw_input, false);
-            unsigned punches = std::exchange(pressed_punches, 0u);
-            unsigned kicks = std::exchange(pressed_kicks, 0u);
+            const unsigned fresh_punches = std::exchange(pressed_punches, 0u);
+            const unsigned fresh_kicks = std::exchange(pressed_kicks, 0u);
+            unsigned punches = fresh_punches;
+            unsigned kicks = fresh_kicks;
             if (normal_input >= 0 && normal_input < 3) punches |= 1u << normal_input;
             if (normal_input >= 3) kicks |= 1u << (normal_input - 3);
-            if (wants_throw) punches = kicks = 0;
+            const unsigned edges = punches | (kicks << 3);
+            if (wants_throw && !scripts) punches = kicks = 0;
+            const unsigned punch_buttons = (held_attack_buttons | punches) & 7u;
+            const bool two_punches = (punch_buttons & (punch_buttons - 1)) != 0;
+            const bool punch_dash = !wants_throw && fresh_punches && two_punches;
             std::move_backward(normal_inputs.begin(), normal_inputs.end() - 1, normal_inputs.end());
             normal_inputs.front() = {punches | (kicks << 3), practice_down};
             const int direction = int(practice_right) - int(practice_left);
             const bool airborne = jump_height > 0 || jump_velocity > 0;
             const bool repeated_direction = update_dash_input(direction, airborne);
-            if (throw_phase != ThrowPhase::none) {
+            if (scripts) {
+                update_script_inputs(dash_input_history.front(), edges);
+                script_state.variables[0x01] = normal_hit_landed ? 1.0f : 0.0f;
+                script_state.variables[0x03] = normal_contact ? 1.0f : 0.0f;
+                script_state.variables[0x05] = airborne ? 0.0f : 1.0f;
+                script_state.variables[0x06] = 0.0f;
+                script_state.variables[0x3e] = airborne ? 1.0f : 2.0f;
+                script_state.variables[0x36] = skullgirls::filia_gravity;
+                script_state.variables[0x42] = float(tension) * 100.0f;
+                script_state.variables[0x85] = 1.0f; // Point fighter can spend meter.
+                script_state.variables[0x9e] = jump_facing_right ? jump_horizontal : -jump_horizontal;
+                script_state.variables[0x9f] = jump_velocity;
+                script_state.bits[15] = ringlet_locked();
+                script_state.bits[32] = airborne && airball_used;
+            }
+            if (fenrir_captured) {
                 normal_input = -1;
-                advance_throw();
                 return;
             }
+            const bool air_throw_cancel = aerial_throw && throw_phase == ThrowPhase::recovery &&
+                airborne && !hit_stop && (repeated_direction || punch_dash);
+            if (throw_phase != ThrowPhase::none && !air_throw_cancel) {
+                normal_input = -1;
+                if (hit_stop) --hit_stop;
+                else {
+                    advance_throw();
+                    move_during_throw(left, right);
+                }
+                return;
+            }
+            if (air_throw_cancel) {
+                throw_phase = ThrowPhase::none;
+                normal_input = -1;
+                punches = kicks = 0;
+            }
             const bool facing_right = practice_x < opponent_x || (practice_x == opponent_x && faces_right_at_tie);
-            const auto special = [&](bool command_facing_right, unsigned punch_buttons, unsigned kick_buttons) {
+            const auto forward = facing_right ? 0u : 4u;
+            if (!airborne) {
+                airball_dash_cancelled = airball_used = false;
+                script_state.bits[64] = false;
+                air_dash_lockout = 0;
+                pending_air_dash = 0;
+            }
+            const bool scripted_normal = scripts && active_normal >= 0 && active_normal < skullgirls::updo_light;
+            const auto command_source = scripted_normal ? skullgirls::filia_foit_normals[active_normal] :
+                airborne ? 77u : practice_down ? 21u : 20u;
+            const bool command_facing = scripted_normal ? normal_facing_right : airborne ? jump_facing_right : facing_right;
+            const bool taunt = scripts ? !airborne && (active_normal < 0 || scripted_normal) &&
+                script_transition(*scripts, command_source, command_facing,
+                    [](unsigned move) { return move == 170; }) == 170 :
+                sample_taunt(punches, kicks, dash_input_history[0] == forward && dash_input_history[1] != forward, airborne);
+            const auto special = [&](bool command_facing_right, unsigned punch_buttons,
+                                     unsigned kick_buttons, bool allow_feint) -> SpecialCommand {
+                if (scripts) {
+                    const auto target = script_transition(*scripts, command_source, command_facing_right,
+                        [](unsigned move) { return (move >= 140 && move <= 145) ||
+                            (move >= 147 && move <= 153) || (move >= 161 && move <= 163); });
+                    if (target >= 161) return {skullgirls::updo_light + target - 161, unsigned(target - 161)};
+                    if (target >= 151) return {skullgirls::air_hairball, unsigned(target - 151)};
+                    if (target >= 148) return {skullgirls::ground_hairball, unsigned(target - 148)};
+                    if (target == 147) return {skullgirls::ringlet_psych};
+                    if (target >= 140) return {skullgirls::ringlet_spike, unsigned(target - 140) / 2,
+                                                (target & 1) == 0};
+                    return {};
+                }
                 if (kick_buttons && skullgirls::filia_quarter_circle(dash_input_history, !command_facing_right, airborne)) {
-                    // Moves 148–150 set horizontal speed in 0xa8 and the roll counter in 0xa9.
                     const unsigned strength = (kick_buttons & 4u) ? 2 : (kick_buttons & 2u) ? 1 : 0;
-                    constexpr float ground_speed[] = {18, 22, 23};
-                    constexpr unsigned ground_roll_ticks[] = {11, 17, 29};
-                    hairball_speed = airborne ? 22.0f : ground_speed[strength];
-                    hairball_roll_ticks = airborne ? 17 : ground_roll_ticks[strength];
-                    return airborne ? skullgirls::air_hairball : skullgirls::ground_hairball;
+                    return {airborne ? skullgirls::air_hairball : skullgirls::ground_hairball, strength};
                 }
                 if (!airborne && punch_buttons) {
                     const unsigned strength = (punch_buttons & 4u) ? 2 : (punch_buttons & 2u) ? 1 : 0;
-                    // Child 0 holds the owner's FOIT bit 15 until its last record.
-                    const bool can_spawn = ringlet_spikes.empty();
+                    const bool can_spawn = !ringlet_locked();
                     const bool half_circle = can_spawn &&
                         skullgirls::filia_ringlet_half_circle(dash_input_history, command_facing_right);
                     if (!half_circle && skullgirls::filia_updo_motion(dash_input_history, command_facing_right))
-                        return skullgirls::updo_light + static_cast<int>(strength);
+                        return {skullgirls::updo_light + static_cast<int>(strength)};
                     if (can_spawn && (half_circle ||
-                        skullgirls::filia_quarter_circle(dash_input_history, command_facing_right, false))) {
-                        ringlet_strength = strength;
-                        ringlet_entry_ticks = half_circle ? skullgirls::ringlet_half_entry_ticks :
-                            skullgirls::ringlet_quarter_entry_ticks;
-                        return skullgirls::ringlet_spike;
-                    }
+                        skullgirls::filia_quarter_circle(dash_input_history, command_facing_right, false)))
+                        return {skullgirls::ringlet_spike, strength, half_circle};
                 }
-                return -1;
+                if (allow_feint && !airborne && kick_buttons &&
+                    skullgirls::filia_quarter_circle(dash_input_history, command_facing_right, false))
+                    return SpecialCommand{skullgirls::ringlet_psych};
+                return {};
             };
+            if (!wants_throw && (fresh_punches || fresh_kicks) &&
+                (hit_stop || hurt_group >= 0 || blockstun || active_normal >= skullgirls::updo_light)) {
+                // Match against the direction history at the button press, then wait for recovery.
+                const auto command = special(facing_right, fresh_punches, fresh_kicks, true);
+                if (command.move >= 0) {
+                    buffered_special = BufferedSpecial{command, special_recovery_buffer + 1, facing_right};
+                    normal_input = -1;
+                }
+            }
+            int throw_move = -1;
+            if (scripts && hurt_group < 0 && !guard_locked() && !jump_start && !landing &&
+                (active_normal < 0 || scripted_normal)) {
+                const auto source = scripted_normal ? command_source : 95u;
+                throw_move = script_transition(*scripts, source, command_facing, [](unsigned move) {
+                        return (move >= 117 && move <= 120) || move == 130 || move == 131;
+                    });
+            }
             if (hurt_group < 0 && active_normal >= 0 && active_normal < skullgirls::updo_light && queued_followup < 0) {
                 // FUN_004985c0 locks the first eligible transition during hit stop.
                 if (!wants_throw)
-                    queued_followup = special(normal_facing_right,
-                        punches | (held_attack_buttons & 7u), kicks | ((held_attack_buttons >> 3) & 7u));
+                    queued_followup = prepare_special(special(normal_facing_right,
+                        punches | (held_attack_buttons & 7u), kicks | ((held_attack_buttons >> 3) & 7u),
+                        normal_contact), airborne);
                 const auto pressed = [&](int button, bool down) {
                     return std::any_of(normal_inputs.begin(), normal_inputs.end(), [&](const auto& sample) {
                         return (sample.buttons & (1u << button)) && (!down || sample.down);
@@ -1374,8 +2156,13 @@ struct Menu {
                     if (pressed(0, true)) return skullgirls::rapid_crouch_lp;
                     return pressed(0, false) ? skullgirls::rapid_stand_lp : -1;
                 };
-                if (queued_followup < 0 && active_normal == 0) queued_followup = rapid_jab();
-                if (queued_followup < 0 && normal_contact) {
+                if (queued_followup < 0 && scripted_normal) {
+                    const auto target = script_transition(*scripts, command_source, normal_facing_right,
+                        [](unsigned move) { return move >= 97 && move <= 116; }, script_move_age - 1);
+                    queued_followup = skullgirls::filia_normal_from_foit(target);
+                }
+                if (!scripts && queued_followup < 0 && active_normal == 0) queued_followup = rapid_jab();
+                if (!scripts && queued_followup < 0 && normal_contact) {
                     // Each FOIT button checks its crouching edge before its standing edge.
                     for (int button : {0, 3, 1, 4, 2, 5}) {
                         const bool down = !airborne && pressed(button, true);
@@ -1384,51 +2171,127 @@ struct Menu {
                         if (queued_followup >= 0) break;
                     }
                 }
-                if (queued_followup < 0 && active_normal == 6) queued_followup = rapid_jab();
+                if (!scripts && queued_followup < 0 && active_normal == 6) queued_followup = rapid_jab();
             }
             if (hit_stop || hurt_group >= 0) {
                 if (hurt_group >= 0 || active_normal >= 0) normal_input = -1;
                 if (hit_stop) --hit_stop;
-                else tick_hurt(left, right);
+                else tick_hurt(left, right, wants_throw || fresh_punches || fresh_kicks, ceiling);
                 return;
             }
-            if (blockstun) {
-                --blockstun;
+            if (guard_locked()) {
+                if (blockstun) --blockstun;
+                advance_guard_stun();
                 normal_input = -1;
                 return;
             }
-            if (wants_throw && active_normal < 0 && !airborne && !jump_start && !landing) {
+            if (throw_move >= 0 || (!scripts && wants_throw && active_normal < 0 &&
+                !jump_start && !landing)) {
+                buffered_special.reset();
                 throw_phase = ThrowPhase::start;
-                throw_facing_right = facing_right;
+                aerial_throw = airborne;
+                throw_facing_right = scripted_normal ? normal_facing_right : airborne ? jump_facing_right : facing_right;
+                forward_ground_throw = scripts ? throw_move == 118 || throw_move == 120 :
+                    !airborne && direction != (facing_right ? -1 : 1);
                 throw_tick = 0;
-                normal_input = -1;
-                dash_direction = 0;
+                normal_input = active_normal = queued_followup = -1;
+                dash_direction = air_dash_direction = 0;
+                pending_air_dash = 0;
+                jump_horizontal = 0;
                 ground_transition = GroundTransition::none;
                 advance_throw();
+                if (aerial_throw) move_during_throw(left, right);
                 return;
             }
             int next_normal = queued_followup;
+            if (taunt && !jump_start && active_normal < skullgirls::filia_taunt)
+                next_normal = skullgirls::filia_taunt;
+            const auto super_kicks = ((held_attack_buttons >> 3) | kicks) & 7u;
+            if (tension && !jump_start &&
+                (active_normal < 0 || scripted_normal || (active_normal < skullgirls::filia_taunt && normal_contact))) {
+                const bool facing = command_facing;
+                if (scripts && (active_normal < 0 || scripted_normal)) {
+                    const auto target = script_transition(*scripts, command_source, facing, [&](unsigned move) {
+                        return move == 171 || move == 176 || move == 182 || (move == 191 && !tricobezoar);
+                    });
+                    switch (target) {
+                    case 171: next_normal = skullgirls::gregor_start; break;
+                    case 176: next_normal = skullgirls::gregor_air_start; break;
+                    case 182: next_normal = skullgirls::fenrir_start; break;
+                    case 191: next_normal = skullgirls::tricobezoar; break;
+                    }
+                } else {
+                    const bool quarter_back = skullgirls::filia_quarter_circle(dash_input_history, !facing, airborne);
+                    if (!airborne && punches && two_punches) {
+                        if (quarter_back && tension >= 3 && !tricobezoar) next_normal = skullgirls::tricobezoar;
+                        else if (skullgirls::filia_updo_motion(dash_input_history, facing)) next_normal = skullgirls::fenrir_start;
+                    }
+                    if (kicks && (super_kicks & (super_kicks - 1)) && quarter_back)
+                        next_normal = airborne ? skullgirls::gregor_air_start : skullgirls::gregor_start;
+                }
+                // A tag chord with a fresh button edge takes priority over its component attacks.
+                const unsigned snap_chord = punch_buttons & super_kicks & (punches | kicks) & 6u;
+                if (!airborne && snap_chord && (active_normal < 0 || normal_contact) &&
+                    skullgirls::filia_quarter_circle(dash_input_history, facing, false)) {
+                    next_normal = skullgirls::filia_snapback;
+                    snapback_reserve = (snap_chord & 4u) ? 1u : 0u;
+                }
+                if (next_normal >= skullgirls::tricobezoar) {
+                    tension -= next_normal == skullgirls::tricobezoar ? 3 : 1;
+                    normal_facing_right = facing;
+                    blockbuster_ticks = 0;
+                    fenrir_connected = false;
+                    air_dash_direction = 0;
+                    jump_horizontal = jump_velocity = 0;
+                }
+            }
+            const bool idle_button_dash = punch_dash && !jump_start &&
+                (airborne ? !air_dash_used && !air_dash_direction : !dash_direction && !practice_up);
             // The normal landing animation (43) can branch to attack dispatcher 95.
-            if (normal_input >= 0 && !jump_start && !double_jump_tick && active_normal < 0) {
-                next_normal = special(facing_right, punches, kicks);
-                if (next_normal < 0) {
-                    const bool ringlet = !airborne && (kicks & 4u) &&
-                        skullgirls::filia_quarter_circle(dash_input_history, facing_right, false);
-                    next_normal = ringlet ? skullgirls::ringlet_psych :
-                        normal_input + (airborne ? 12 : practice_down ? 6 : 0);
+            if (next_normal < 0 && (!wants_throw || scripts) && !jump_start && active_normal < 0) {
+                if (buffered_special && !(fresh_punches || fresh_kicks)) {
+                    const auto& command = buffered_special->command;
+                    if (buffered_special->facing_right == facing_right &&
+                        airborne == (command.move == skullgirls::air_hairball) &&
+                        (command.move != skullgirls::ringlet_spike || !ringlet_locked()))
+                        next_normal = prepare_special(command, airborne);
+                    buffered_special.reset();
+                }
+                if (next_normal < 0 && (normal_input >= 0 || (scripts && edges)))
+                    next_normal = prepare_special(special(facing_right, punches, kicks, true), airborne);
+                if (next_normal < 0 && (normal_input >= 0 || (scripts && edges)) && !idle_button_dash) {
+                    if (scripts) {
+                        const auto target = script_transition(*scripts, 95, airborne ? jump_facing_right : facing_right,
+                            [](unsigned move) { return move >= 97 && move <= 116; });
+                        next_normal = skullgirls::filia_normal_from_foit(target);
+                    } else {
+                        next_normal = normal_input + (airborne ? 12 : practice_down ? 6 : 0);
+                    }
                 }
             }
             if (next_normal >= 0) {
+                buffered_special.reset();
                 landing = 0;
                 if (active_normal < 0) normal_facing_right = airborne ? jump_facing_right : facing_right;
+                if (next_normal == skullgirls::filia_taunt) normal_facing_right = facing_right;
                 active_normal = next_normal;
+                pending_air_dash = 0;
+                if (next_normal == skullgirls::air_hairball) {
+                    airball_used = true;
+                    airball_hits = airball_blocks = 0;
+                }
+                ++attack_instance;
                 updo_flight_ticks = 0;
                 normal_frame = normal_tick = 0;
-                // The repeat starts with a script-only record. Keep the displayed jab pose
-                // until that record supplies a replacement sprite.
-                if (next_normal != skullgirls::rapid_stand_lp && next_normal != skullgirls::rapid_crouch_lp)
-                    normal_pose = 0;
+                normal_pose = 0;
+                next_script_record = 0;
+                script_move_age = 0;
+                script_state.variables[0x7f] = 0.0f;
+                script_state.variables[0xae] = 0.0f;
+                script_state.variables[0xb0] = 0.0f;
+                script_state.bits[0] = false;
                 normal_contact = false;
+                normal_hit_landed = false;
                 rapid_jab_whiff = false;
                 last_contact = nullptr;
                 queued_followup = -1;
@@ -1439,20 +2302,37 @@ struct Menu {
                 if (!airborne) {
                     crouching = (next_normal >= 6 && next_normal < 12) || next_normal == skullgirls::rapid_crouch_lp;
                     rising = false;
-                    stance_tick = crouching ? 19 : 0;
+                    stance_tick = crouching ? static_cast<unsigned>(skullgirls::crouch_enter.size()) : 0;
                 }
+            }
+            if (next_normal < 0 && active_normal == skullgirls::filia_launcher && practice_up && !airborne &&
+                (scripts ? script_transition(*scripts, 102, normal_facing_right, [](unsigned move) {
+                    return move >= 46 && move <= 48;
+                }) >= 0 : normal_contact)) {
+                active_normal = -1;
+                last_contact = nullptr;
+                normal_contact = normal_hit_landed = false;
             }
             normal_input = -1;
             const int relative = facing_right ? direction : -direction;
             // FOIT 43 can branch to jump (44), walk (26/29), or crouch (22).
             if (landing && (practice_up || relative || practice_down)) landing = 0;
+            if (!airborne && active_normal < 0 && !practice_down && relative && (crouching || rising)) {
+                // Horizontal input can interrupt the neutral stand-up animation.
+                crouching = rising = false;
+                stance_tick = 0;
+                walk_tick = 0;
+            }
             const bool doing_updo = active_normal >= skullgirls::updo_light && active_normal < skullgirls::ground_hairball;
-            if (active_normal < 0 && repeated_direction && !dash_direction && !practice_down && !crouching &&
-                !rising && !jump_start && !jump_velocity && !jump_height && !landing && !practice_up) {
-                dash_direction = relative;
+            const bool ground_double_tap = repeated_direction && !dash_direction && !practice_down && !crouching &&
+                !rising && !jump_start && !landing && !practice_up;
+            if (!airborne && active_normal < 0 && (idle_button_dash || ground_double_tap)) {
+                dash_direction = relative < 0 ? -1 : 1;
                 dash_facing_right = facing_right;
                 forward_dash = ForwardDash::start;
                 dash_frame = dash_tick = 0;
+                crouching = rising = false;
+                landing = 0;
             }
             const float walk_speed = relative > 0 ? skullgirls::walk_forward.front().velocity :
                 skullgirls::walk_backward.front().velocity;
@@ -1469,26 +2349,42 @@ struct Menu {
                 } else if (ground_facing && ground_facing != facing) {
                     ground_transition = crouching ? GroundTransition::crouch_turn : GroundTransition::stand_turn;
                     ground_transition_tick = 0;
-                    transition_start_sprite = previous_sprite;
                 } else if (!relative && walk_direction < 0 && previous_sprite >= 71 && previous_sprite <= 92 &&
                            ground_transition == GroundTransition::none) {
                     ground_transition = GroundTransition::backwalk_stop;
                     ground_transition_tick = 0;
-                    transition_start_sprite = previous_sprite;
                 }
                 ground_facing = facing;
             }
-            if (walk_direction != relative || dash_direction || active_normal >= 0) walk_tick = 0;
-            walk_direction = relative;
+            const int next_walk_direction = practice_down || crouching || rising ? 0 : relative;
+            if (walk_direction != next_walk_direction || dash_direction || active_normal >= 0) walk_tick = 0;
+            walk_direction = next_walk_direction;
             if (dash_direction) {
-                if (dash_direction > 0 && (forward_dash == ForwardDash::extend || forward_dash == ForwardDash::loop) &&
-                    direction != (dash_facing_right ? 1 : -1)) {
-                    forward_dash = ForwardDash::stop;
-                    dash_frame = dash_tick = 0;
+                if (dash_direction > 0) {
+                    const auto change_dash = [&](ForwardDash phase) {
+                        forward_dash = phase;
+                        dash_frame = dash_tick = 0;
+                    };
+                    if (scripts) {
+                        if (forward_dash == ForwardDash::start && dash_frame + 1 == skullgirls::dash_forward.size()) {
+                            script_state.variables[0xb0] = 1.0f; // Immediate record 13 of move 36.
+                            if (script_transition(*scripts, 36, dash_facing_right,
+                                    [](unsigned move) { return move == 37; }) == 37)
+                                change_dash(ForwardDash::extend);
+                        } else if (forward_dash == ForwardDash::extend || forward_dash == ForwardDash::loop) {
+                            const auto source = forward_dash == ForwardDash::extend ? 37u : 38u;
+                            if (script_transition(*scripts, source, dash_facing_right,
+                                    [](unsigned move) { return move == 39; }) == 39)
+                                change_dash(ForwardDash::stop);
+                        }
+                    } else if ((forward_dash == ForwardDash::extend || forward_dash == ForwardDash::loop) &&
+                               direction != (dash_facing_right ? 1 : -1)) {
+                        change_dash(ForwardDash::stop);
+                    }
                 }
                 const auto step_dash = [&](const auto& frames) {
                     const auto& frame = frames[dash_frame];
-                    movement_sprite = frame.sprite ? frame.sprite : previous_sprite;
+                    movement_sprite = frame.sprite;
                     movement = dash_facing_right ? frame.velocity : -frame.velocity;
                     if (++dash_tick < frame.ticks) return false;
                     dash_tick = 0;
@@ -1501,7 +2397,10 @@ struct Menu {
                 } else {
                     switch (forward_dash) {
                     case ForwardDash::start:
-                        if (step_dash(skullgirls::dash_forward)) forward_dash = ForwardDash::extend;
+                        if (step_dash(skullgirls::dash_forward)) {
+                            if (scripts) dash_direction = 0; // Move 36 defaults to Stand.
+                            else forward_dash = ForwardDash::extend;
+                        }
                         break;
                     case ForwardDash::extend:
                         if (step_dash(skullgirls::dash_forward_extend)) forward_dash = ForwardDash::loop;
@@ -1515,7 +2414,7 @@ struct Menu {
                     }
                 }
             }
-            if (!movement_sprite && relative) {
+            if (!movement_sprite && walk_direction) {
                 const auto sprite_at = [](const auto& frames, unsigned tick) {
                     for (const auto& frame : frames) {
                         if (tick < frame.ticks) return frame.sprite;
@@ -1555,9 +2454,8 @@ struct Menu {
                 dash_direction = 0;
                 air_ticks = 0;
                 fall_tick = 0;
-                double_jump_tick = 0;
                 air_dash_fall = air_hurt_fall = false;
-                air_dash_used = double_jump_used = false;
+                air_dash_used = false;
                 crouching = rising = false;
             }
             if (jump_start) {
@@ -1567,32 +2465,42 @@ struct Menu {
                 if (++jump_start > startup.size()) {
                     jump_start = 0;
                     jump_velocity = super_jump ? 39.0f : 32.0f;
+                    air_dash_lockout = skullgirls::filia_air_dash_lockout;
                 }
-            } else if (!doing_updo && (jump_velocity || jump_height)) {
+            } else if (!doing_updo && active_normal < skullgirls::gregor_start && (jump_velocity || jump_height)) {
                 const int air_relative = jump_facing_right ? direction : -direction;
-                if (active_normal < 0 && repeated_direction && !air_dash_used && !air_dash_direction && !double_jump_tick) {
+                const bool recovering_airball = active_normal == skullgirls::air_hairball &&
+                    normal_frame >= skullgirls::hairball_end_frame && !airball_dash_cancelled;
+                const int airball_link = recovering_airball && scripts ? airball_dash_transition(*scripts) : -1;
+                const bool airball_cancel = recovering_airball &&
+                    (scripts ? airball_link >= 0 : !air_dash_used && ((repeated_direction && air_relative > 0) || punch_dash));
+                const bool air_double_tap = repeated_direction && !air_dash_used && !air_dash_direction;
+                if (active_normal < 0 && !pending_air_dash && (idle_button_dash || air_double_tap))
+                    pending_air_dash = air_relative < 0 ? -1 : 1;
+                if (air_throw_cancel || airball_cancel || (pending_air_dash && !air_dash_lockout)) {
+                    if (airball_cancel) {
+                        if (scripts) {
+                            for (const auto& assignment : scripts->animations[airball_link].front().script)
+                                skullgirls::apply_foit_assignment(assignment, script_state);
+                        }
+                        airball_dash_cancelled = true;
+                        jump_facing_right = normal_facing_right;
+                        active_normal = queued_followup = -1;
+                        last_contact = nullptr;
+                    }
                     air_dash_used = true;
-                    air_dash_direction = air_relative;
+                    air_dash_direction = airball_cancel ? 1 : air_throw_cancel ? (air_relative < 0 ? -1 : 1) :
+                        pending_air_dash;
+                    pending_air_dash = 0;
                     air_dash_tick = 0;
                     fall_tick = 0;
-                    double_jump_tick = 0;
                     air_hurt_fall = false;
                     jump_velocity = 0;
                 }
-                if (active_normal < 0 && !double_jump_used && !air_dash_direction &&
-                    skullgirls::filia_air_jump(dash_input_history)) {
-                    double_jump_used = true;
-                    double_jump_tick = 1;
-                    fall_tick = 0;
-                    air_ticks = 0;
-                    air_dash_fall = air_hurt_fall = false;
-                    jump_direction = air_relative;
-                    jump_horizontal = 7.0f * direction;
-                    jump_velocity = 1.0f;
-                }
+                if (air_dash_lockout) --air_dash_lockout;
                 movement = jump_horizontal;
                 const unsigned air_direction = jump_direction > 0 ? 1 : jump_direction < 0 ? 2 : 0;
-                const bool high_jump = super_jump || double_jump_used;
+                const bool high_jump = super_jump;
                 const unsigned first_pose = (high_jump ? 136 : 130) + 2 * air_direction;
                 movement_sprite = first_pose + (air_ticks >= 4);
                 if (air_dash_direction) {
@@ -1613,15 +2521,6 @@ struct Menu {
                     };
                     movement = air_dash_direction > 0 ? step(skullgirls::air_dash_forward) :
                         step(skullgirls::air_dash_backward);
-                } else if (double_jump_tick) {
-                    const auto pose = skullgirls::air_jump_start[double_jump_tick++ - 1];
-                    movement_sprite = pose ? pose : previous_sprite;
-                    if (double_jump_tick > skullgirls::air_jump_start.size()) {
-                        double_jump_tick = 0;
-                        jump_velocity = 28.0f;
-                    } else {
-                        return;
-                    }
                 }
                 if (!air_dash_direction) {
                     if (jump_velocity < 7.0f || air_dash_fall || air_hurt_fall) {
@@ -1649,19 +2548,17 @@ struct Menu {
                         }
                     }
                     if (!fall_tick && movement_sprite == first_pose) ++air_ticks;
+                    if (active_normal == skullgirls::air_hairball && normal_frame >= skullgirls::hairball_loop_frame &&
+                        normal_frame < skullgirls::hairball_end_frame)
+                        jump_velocity = airball_lift;
                     jump_height += jump_velocity;
-                    jump_velocity -= 1.0f;
+                    jump_velocity -= active_normal == skullgirls::air_hairball ? 1.0f : skullgirls::filia_gravity;
                 }
                 if (!air_dash_direction && jump_height <= 0 && jump_velocity < 0) {
                     jump_height = jump_velocity = 0;
-                    double_jump_tick = 0;
-                    if (active_normal == skullgirls::air_hairball) {
-                        active_normal = skullgirls::ground_hairball;
-                        normal_frame = skullgirls::hairball_end_frame;
-                        normal_tick = 0;
-                        hairball_roll_ticks = 0;
-                        last_contact = &skullgirls::filia_normal_hits[active_normal][1];
-                    } else {
+                    pending_air_dash = 0;
+                    // The airborne roll keeps its own ending (155 -> 157) on floor contact.
+                    if (active_normal != skullgirls::air_hairball) {
                         movement_sprite = 113;
                         active_normal = -1;
                         queued_followup = -1;
@@ -1669,17 +2566,14 @@ struct Menu {
                     }
                 }
             } else if (landing) {
-                constexpr std::array<unsigned, 18> poses{
-                    114,114,114,114,115,115,115,116,116,116,116,117,117,117,118,118,118,118};
+                const auto& poses = skullgirls::jump_landing;
                 movement_sprite = poses[landing - 1];
                 movement = 0;
                 if (++landing > poses.size()) landing = 0;
             } else if (active_normal < 0 && !was_dashing && (practice_down || crouching || rising)) {
-                constexpr std::array<unsigned, 19> down_poses{
-                    40,40,40,40,40,40,41,41,41,42,42,42,43,43,43,44,44,44,44};
-                constexpr std::array<unsigned, 21> up_poses{
-                    44,44,44,45,45,45,46,46,46,47,47,47,47,48,48,48,48,49,49,49,49};
-                constexpr std::array<unsigned, 18> idle_duration{5,5,5,5,4,5,4,5,4,5,5,5,4,5,4,5,4,5};
+                const auto& down_poses = skullgirls::crouch_enter;
+                const auto& up_poses = skullgirls::crouch_exit;
+                const auto& idle_duration = skullgirls::crouch_idle_duration;
                 movement = 0;
                 if (!practice_down && crouching) {
                     crouching = false;
@@ -1709,8 +2603,7 @@ struct Menu {
             }
             if (ground_transition != GroundTransition::none) {
                 const auto step_transition = [&](const auto& poses) {
-                    const auto pose = poses[ground_transition_tick++];
-                    movement_sprite = pose ? pose : transition_start_sprite;
+                    movement_sprite = poses[ground_transition_tick++];
                     movement = 0;
                     if (ground_transition_tick == poses.size()) ground_transition = GroundTransition::none;
                 };
@@ -1738,6 +2631,9 @@ struct Menu {
                     }
                 }
             }
+            const bool moving_blockbuster = active_normal >= skullgirls::gregor_start &&
+                active_normal <= skullgirls::fenrir_land;
+            const float blockbuster_movement = moving_blockbuster ? move_blockbuster_air() : 0.0f;
             if (active_normal >= 0) {
                 striking_normal = active_normal;
                 if (active_normal == skullgirls::ringlet_spike && ringlet_entry_ticks) {
@@ -1745,14 +2641,27 @@ struct Menu {
                     normal_pose = movement_sprite = previous_sprite;
                     return;
                 }
-                const auto& sequence = skullgirls::filia_normals[active_normal];
+                const bool fenrir_whiff = active_normal == skullgirls::fenrir_fall;
+                const auto& sequence = skullgirls::filia_normals[fenrir_whiff ? skullgirls::updo_light : active_normal];
+                normal_frame = skullgirls::next_visible_filia_normal_record(active_normal, normal_frame);
+                if (fenrir_whiff) {
+                    // These FOIT records advance within the tick without drawing a pose.
+                    while (sequence[normal_frame].ticks && !sequence[normal_frame].sprite) ++normal_frame;
+                }
                 const auto& frame = sequence[normal_frame];
+                const auto frame_ticks = scripts && active_normal < skullgirls::updo_light
+                    ? apply_normal_script(*scripts) : frame.ticks;
                 if (active_normal == skullgirls::ringlet_spike && normal_frame == skullgirls::ringlet_spawn_frame &&
                     normal_tick == 0) {
                     const float distance = skullgirls::ringlet_distance[ringlet_strength];
                     // FUN_0049a260 offsets the parent's integer world position by facing.
                     ringlet_spikes.push_back({static_cast<int>(practice_x) +
-                        (normal_facing_right ? distance : -distance), normal_facing_right});
+                        (normal_facing_right ? distance : -distance), normal_facing_right, attack_instance, palette_slot});
+                }
+                if (active_normal == skullgirls::tricobezoar && normal_frame == skullgirls::tricobezoar_spawn_frame &&
+                    normal_tick == 0) {
+                    tricobezoar = Tricobezoar{static_cast<int>(practice_x) + (normal_facing_right ? -17.0f : 17.0f),
+                        static_cast<int>(jump_height) + 408.0f, normal_facing_right, attack_instance, palette_slot};
                 }
                 rapid_jab_whiff = skullgirls::filia_rapid_jab_whiff(active_normal, normal_frame + 1);
                 if (frame.sprite) normal_pose = frame.sprite;
@@ -1764,6 +2673,10 @@ struct Menu {
                 if (normal_hit && normal_hit->clear_frame && normal_frame + 1 >= normal_hit->clear_frame)
                     normal_hit = nullptr;
                 if (active_normal < 12 || active_normal >= skullgirls::rapid_stand_lp) movement = 0;
+                if (moving_blockbuster) {
+                    movement = blockbuster_movement;
+                    ++blockbuster_ticks;
+                }
                 if (doing_updo && jump_height > 0) {
                     const auto& updo = skullgirls::updo_motion[active_normal - skullgirls::updo_light];
                     movement = normal_facing_right ? jump_horizontal : -jump_horizontal;
@@ -1793,9 +2706,9 @@ struct Menu {
                         return;
                     }
                 }
-                if (++normal_tick >= frame.ticks) {
+                if (++normal_tick >= frame_ticks) {
                     normal_tick = 0;
-                    ++normal_frame;
+                    normal_frame = skullgirls::next_visible_filia_normal_record(active_normal, normal_frame + 1);
                     if (hairball_roll && normal_frame == skullgirls::hairball_end_frame) {
                         normal_frame = skullgirls::hairball_loop_frame;
                     }
@@ -1804,8 +2717,12 @@ struct Menu {
                         if (normal_frame == flight + skullgirls::updo_air_loop_end)
                             normal_frame = flight + skullgirls::updo_air_loop_start;
                     }
+                    if (fenrir_whiff && normal_frame == skullgirls::fenrir_whiff_landing)
+                        normal_frame = skullgirls::fenrir_fall_loop;
                     if (normal_frame == std::size(sequence) || !sequence[normal_frame].ticks) {
-                        active_normal = -1;
+                        if (active_normal == skullgirls::air_hairball && !jump_height) landing = 1;
+                        if (moving_blockbuster) enter_blockbuster_phase(blockbuster_successor());
+                        else active_normal = -1;
                         queued_followup = -1;
                     }
                 }
@@ -1814,6 +2731,7 @@ struct Menu {
         }
 
         bool mirror(bool facing_right) const {
+            if (movement_sprite >= 1000 && movement_sprite <= 1035) return !normal_facing_right;
             if (blockstun) return !hurt_facing_right;
             if (throw_phase != ThrowPhase::none) return !throw_facing_right;
             if (movement_sprite >= 702) return !hurt_facing_right;
@@ -1827,7 +2745,7 @@ struct Menu {
             if (movement_sprite) return movement_sprite;
             // FOIT idle move 20 loops on this fighter's animation clock.
             constexpr std::array<unsigned, 20> duration{
-                5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 4, 4, 4, 4, 4, 4, 4, 4};
+                4, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 4, 4, 4, 4, 4, 4, 4, 4};
             auto tick = idle_tick;
             unsigned index = 0;
             while (tick >= duration[index]) tick -= duration[index++];
@@ -1835,27 +2753,174 @@ struct Menu {
         }
     };
     std::array<PracticeFighter, 2> practice_players;
+    struct PracticeTeamTravel {
+        enum class Motion { tag_in, assist_in, tag_out, assist_out, snap_out };
+        static constexpr float speed = 38.0f;
+        float x, height = 0;
+        bool facing_right = true;
+        Motion motion = Motion::tag_in;
+        unsigned ticks = 0;
+        float span = 0;
+        unsigned pose = 0;
+        unsigned landing_ticks = 0;
+        unsigned exit_flight_ticks = 0;
+        float takeoff_height = 0;
+        float progress = 0;
+        std::optional<float> exit_gate;
+
+        bool advance_assist_exit(float destination, unsigned tick) {
+            using namespace skullgirls;
+            constexpr unsigned startup = team_animation_ticks(assist_exit_start);
+            constexpr unsigned rise = team_animation_ticks(assist_exit_rise);
+            constexpr unsigned peak = team_animation_ticks(assist_exit_peak);
+            constexpr unsigned fall = team_animation_ticks(assist_exit_fall);
+            constexpr unsigned minimum_flight = rise + peak + fall + 2; // One tick in each hold.
+            if (tick < startup) {
+                pose = team_animation_sprite(assist_exit_start, tick, 119);
+                return false;
+            }
+            if (!exit_flight_ticks) {
+                takeoff_height = height;
+                exit_flight_ticks = std::max(minimum_flight,
+                    static_cast<unsigned>(std::ceil(std::abs(destination - x) / speed)));
+            }
+            const unsigned flight_tick = tick - startup;
+            if (!landing_ticks && (flight_tick < exit_flight_ticks || x != destination)) {
+                const unsigned left = exit_flight_ticks - std::min(flight_tick, exit_flight_ticks - 1);
+                const float distance = destination - x;
+                x = left == 1 && std::abs(distance) <= speed ? destination :
+                    x + std::clamp(distance / left, -speed, speed);
+                const float progress = float(std::min(flight_tick + 1, exit_flight_ticks)) / exit_flight_ticks;
+                height = 180.0f * 4 * progress * (1 - progress) + takeoff_height * (1 - progress);
+                const unsigned peak_at = rise + 1 + (exit_flight_ticks - minimum_flight) / 2;
+                if (flight_tick < rise)
+                    pose = team_animation_sprite(assist_exit_rise, flight_tick, pose);
+                else if (flight_tick < peak_at) pose = assist_exit_rise_hold;
+                else if (flight_tick < peak_at + peak)
+                    pose = team_animation_sprite(assist_exit_peak, flight_tick - peak_at, pose);
+                else if (flight_tick < peak_at + peak + fall)
+                    pose = team_animation_sprite(assist_exit_fall, flight_tick - peak_at - peak, pose);
+                else pose = assist_exit_fall_hold;
+                return false;
+            }
+            height = 0;
+            pose = team_animation_sprite(assist_exit_land, landing_ticks++, assist_exit_fall_hold);
+            return landing_ticks > team_animation_ticks(assist_exit_land);
+        }
+
+        bool advance(float destination) {
+            using namespace skullgirls;
+            const unsigned tick = ticks++;
+            if (motion == Motion::assist_out) return advance_assist_exit(destination, tick);
+            constexpr unsigned snap_start = team_animation_ticks(snap_out_start);
+            if (motion == Motion::snap_out && tick < snap_start) {
+                pose = team_animation_sprite(snap_out_start, tick, 769);
+                return false;
+            }
+            const float distance = destination - x;
+            if (!span) {
+                span = std::max(std::abs(distance), speed);
+                takeoff_height = height;
+            }
+            const bool arrived = std::abs(distance) <= speed;
+            x = arrived ? destination : x + std::copysign(speed, distance);
+            progress = std::max(progress, std::clamp(1.0f - std::abs(destination - x) / span, 0.0f, 1.0f));
+            switch (motion) {
+            case Motion::tag_in:
+                height = takeoff_height * (1.0f - progress);
+                pose = 365; // TagIn_Normal_Loop, move 447
+                return arrived;
+            case Motion::assist_in:
+                if (!arrived) {
+                    height = takeoff_height * (1.0f - progress);
+                    pose = 175; // Assist_Called_Loop, move 449
+                    return false;
+                }
+                height = 0;
+                pose = team_animation_sprite(assist_landing, landing_ticks++, 175);
+                return landing_ticks > team_animation_ticks(assist_landing);
+            case Motion::tag_out:
+                height = takeoff_height + 120.0f * progress;
+                pose = progress < 0.8f ? 1012 : team_animation_sprite(tag_out_fall,
+                    static_cast<unsigned>((progress - 0.8f) * 5 * team_animation_ticks(tag_out_fall)), 1012);
+                return arrived;
+            case Motion::snap_out:
+                height = takeoff_height + 144.0f * progress;
+                pose = team_animation_sprite(snap_out_fly,
+                    (tick - snap_start) % team_animation_ticks(snap_out_fly), 769);
+                return arrived;
+            case Motion::assist_out: break;
+            }
+            return false;
+        }
+
+        bool advance_exit(float gate, bool left) {
+            // A panning camera can reveal more of the path while an actor is leaving.
+            // Extend the route outward, keeping the actor moving in the same direction.
+            exit_gate = exit_gate ? (left ? std::min(*exit_gate, gate) : std::max(*exit_gate, gate)) : gate;
+            return advance(*exit_gate);
+        }
+    };
+    struct PracticeTeamActor {
+        std::size_t slot;
+        bool home_on_left;
+        PracticeTeamTravel travel;
+    };
+    struct PracticeTag {
+        enum class Kind { regular, guard, knockout, snapback };
+        PracticeTeamActor incoming;
+        Kind kind;
+        unsigned startup_tick = 0;
+        std::optional<PracticeTeamTravel> forced_exit;
+        bool from_burst = false;
+    };
+    struct PracticeAssist {
+        PracticeFighter fighter;
+        PracticeFighter::SpecialCommand command;
+        PracticeTeamActor actor;
+        enum class Phase { entering, acting, leaving } phase = Phase::entering;
+    };
+    struct PracticeTeam {
+        std::size_t active_slot = 0;
+        std::array<PracticeLife, 3> health{};
+        std::optional<PracticeAssist> assist;
+        std::optional<PracticeTag> tag;
+        std::optional<PracticeTeamActor> departing;
+        unsigned assist_cooldown = 0;
+    };
+    std::array<PracticeTeam, 2> practice_teams;
+
+    bool practice_point_snapped(std::size_t side) const {
+        const auto& tag = practice_teams[side].tag;
+        return tag && tag->kind == PracticeTag::Kind::snapback;
+    }
+
+    bool practice_slot_is_filia(std::size_t side, std::size_t slot) const {
+        return slot < fighters[side].size() && std::string_view(roster[fighters[side][slot]]) == "filia";
+    }
     std::array<float, 2> practice_starts{};
     float practice_width = 0, practice_height = 0, practice_floor = 0;
-    std::array<skullgirls::SelectFrame, 1180> movement_frames;
+    float practice_ceiling() const { return std::max(240.0f, practice_height - practice_floor - 100.0f); }
+    std::array<skullgirls::SelectFrame, 1204> movement_frames;
     std::vector<skullgirls::SpriteFrame> combat_metadata;
+    skullgirls::FoitMoveTable filia_move_table;
     std::map<unsigned, skullgirls::SelectFrame> jab_overlays;
+
+    const skullgirls::FoitMoveTable* filia_scripts() const {
+        return filia_move_table.transitions.empty() ? nullptr : &filia_move_table;
+    }
 
     void load_movement_frames() {
         if (movement_frames[2].width) return;
-        using skullgirls::read_sprite_asset;
-        const auto art = read_sprite_asset(game_data / "characters-art.gfs", "characters/filia.art");
-        const auto alternate = read_sprite_asset(game_data / "characters-art-pt.gfs", "characters/filia.art-pt");
-        auto frames = skullgirls::read_foit_frames(
-            read_sprite_asset(game_data / "characters-foits.gfs", "characters/filia.foit"), art.size());
+        skullgirls::CharacterAssets assets(game_data, "filia");
+        auto animations = assets.read_animations();
+        auto& frames = animations.sprites;
         decltype(movement_frames) decoded;
         decltype(jab_overlays) overlays;
         for (unsigned ref = 2; ref < decoded.size(); ++ref) {
             if ((ref >= 125 && ref < 127) ||
-                (ref >= 424 && ref < 466) || ref == 509 || (ref >= 543 && ref < 694) ||
-                (ref >= 773 && ref < 785) || (ref >= 786 && ref < 828) ||
-                (ref >= 829 && ref < 889) || (ref >= 905 && ref < 933) ||
-                (ref >= 953 && ref < 1170)) continue;
+                ref == 509 || ref == 827 || ref == 870 ||
+                (ref >= 1180 && ref < 1191)) continue;
             const auto& source = frames.at(ref - 1);
             const auto& layer = source.layers[0].value();
             auto& frame = decoded[ref];
@@ -1863,7 +2928,7 @@ struct Menu {
             frame.height = layer.tile_rows * 16;
             frame.origin_x = float(source.origin[0]) - float(source.primary_layer_offset[0]);
             frame.origin_y = float(source.origin[1]) - float(source.primary_layer_offset[1]);
-            const auto& bank = source.art_bank == 4 ? alternate : art;
+            const auto& bank = assets.art(source.art_bank);
             frame.pixels = skullgirls::decode_sprite_layer(layer, bank);
             // Jab recovery and rapid-fire smear art share the primary layer's canvas.
             if ((ref == 201 || (ref >= 204 && ref <= 207)) && source.layers[1]) {
@@ -1879,6 +2944,7 @@ struct Menu {
         movement_frames = std::move(decoded);
         jab_overlays = std::move(overlays);
         combat_metadata = std::move(frames);
+        filia_move_table = std::move(animations);
     }
     int practice_camera_center = 0;
     float practice_camera_zoom = 0;
@@ -1907,7 +2973,9 @@ struct Menu {
         // FUN_0057f150 allows more zoom for height than for horizontal separation.
         const float vertical_zoom = std::clamp((practice_floor + std::max(practice_players[0].jump_height, practice_players[1].jump_height) + 288.0f - 720.0f) /
                                                180.0f, 0.0f, 2.5f);
-        const float zoom = std::max(horizontal_zoom, vertical_zoom);
+        const float boundary_zoom = std::clamp(std::min((practice_width - 1280.0f) / 320.0f,
+                                                       (practice_height - 720.0f) / 180.0f), 0.0f, 2.5f);
+        const float zoom = std::min(std::max(horizontal_zoom, vertical_zoom), boundary_zoom);
         practice_camera_zoom = snap ? zoom : practice_camera_zoom + (zoom - practice_camera_zoom) / 2.5f;
         const int view_height = static_cast<int>(720.0f + 180.0f * practice_camera_zoom);
         int target_bottom = 0;
@@ -1933,7 +3001,7 @@ struct Menu {
         const int delta = center - practice_camera_center;
         practice_camera_center += snap || std::abs(delta) <= 4 ? delta : static_cast<int>(delta / 2.5f);
         practice_camera_center = std::clamp(practice_camera_center, half_width,
-                                            static_cast<int>(practice_width) - half_width);
+                                            std::max(half_width, static_cast<int>(practice_width) - half_width));
     }
 
     TiledAnimation loading_animation;
@@ -1954,6 +3022,12 @@ struct Menu {
     std::size_t pause_cursor = 0;
     std::size_t pause_training_cursor = 0;
     std::optional<PauseOption> pause_page;
+    enum class CommandPage { menu, characters, moves };
+    CommandPage command_page = CommandPage::menu;
+    struct CommandRow { std::wstring name, input; };
+    struct CommandList { std::string key; std::wstring title; std::vector<CommandRow> moves; };
+    std::vector<CommandList> command_lists;
+    std::size_t command_menu_cursor = 0, command_character_cursor = 0, command_move_cursor = 0, command_list = 0;
     static constexpr std::array pause_options{L"Resume Game", L"Help & Options...", L"Training Options...",
         L"Command Lists...", L"Leaderboards", L"Achievements...", L"Exit Game"};
     static constexpr std::array pause_training_options{L"Reset Position", L"Change Stage", L"Back"};
@@ -1972,6 +3046,20 @@ struct Menu {
         return std::max(1u, static_cast<unsigned>(training_value("OPT_STR_LIFEBAR_LEVEL", 100)) * 155);
     }
 
+    skullgirls::HeavyReaction practice_hit_reaction(std::size_t attacker,
+                                                     skullgirls::HeavyReaction fallback = {}) const {
+        using Reaction = skullgirls::HeavyReaction;
+        if (attacker != 0) return fallback;
+        switch (training_value("PRACTICE_HIT_REACTION")) {
+        case 1: return {Reaction::sliding, 20, 8};
+        case 2: return {Reaction::ceiling_bounce, 8, 38};
+        case 3: return {Reaction::crumple, 0, 0};
+        case 4: return {Reaction::stagger, 0, 0};
+        case 5: return {Reaction::freeze, 0, 0};
+        default: return fallback;
+        }
+    }
+
     unsigned practice_speed() const {
         constexpr unsigned speeds[] = {100, 75, 50, 25, 10};
         return speeds[training_value("OPT_STR_SLOWMOTION")];
@@ -1981,13 +3069,19 @@ struct Menu {
 
     void start_practice() {
         loading_started = std::chrono::steady_clock::now();
+        practice_scene.reset();
+        practice_background.reset();
         practice_load = std::async(std::launch::async, [this] { load_practice(); });
     }
 
     void load_practice() {
         load_movement_frames();
-        prepare_practice_bitmaps();
-        prepare_hud_portraits();
+        if (fighters != staged_fighters || locked_colors != staged_colors) {
+            prepare_practice_bitmaps();
+            prepare_hud_portraits();
+            staged_fighters = fighters;
+            staged_colors = locked_colors;
+        }
         skullgirls::SpriteArchive stages_archive(game_data / "stages.gfs");
         const auto& level = current_stage().level;
         const auto config = stages_archive.read("stages/" + level + ".lvl");
@@ -2096,6 +3190,7 @@ struct Menu {
         practice_snapshot.reset();
         practice_keys_held = {};
         reset_practice();
+        start_practice_intro();
         idle_start = std::chrono::steady_clock::now();
         training = TrainingView::practice;
     }
@@ -2104,13 +3199,32 @@ struct Menu {
     // and preserves the previous snapshot. Combat commands read the snapshots.
     std::array<unsigned, 2> practice_keys_held{};
     std::array<unsigned, 2> practice_keys_previous{};
+    std::array<unsigned, 2> practice_attack_edges{};
+    struct PracticeInput {
+        unsigned held = 0;
+        unsigned attack_edges = 0;
+    };
     struct PracticePushBox {
         float x;
         skullgirls::WorldBox edges;
     };
     std::array<std::optional<PracticePushBox>, 2> previous_push_boxes{};
+    struct PracticePresentation {
+        enum class Phase { none, intro, knockout, results };
+        struct Actor {
+            unsigned variant = 0, initial_pose = 0, pose = 0, effect_pose = 0;
+            bool facing_right = true, starts_facing_right = true, crouching = false;
+        };
+        Phase phase = Phase::none;
+        unsigned tick = 0;
+        std::array<Actor, 2> actors{};
+        std::array<bool, 2> defeated{};
+    };
+    PracticePresentation practice_presentation;
+    unsigned practice_intro_cycle = 0, practice_win_cycle = 0;
     struct PracticeSnapshot {
         std::array<PracticeFighter, 2> fighters;
+        std::array<PracticeTeam, 2> teams;
         std::array<PracticeHudStats, 2> stats;
         std::array<HudInputs, 2> inputs;
         std::array<std::optional<PracticePushBox>, 2> push_boxes;
@@ -2119,10 +3233,13 @@ struct Menu {
         std::uint64_t stage_tick;
         unsigned recent_dummy_contact;
         std::uint32_t training_rng;
+        std::minstd_rand cpu_rng;
+        PracticePresentation presentation;
+        unsigned intro_cycle, win_cycle;
     };
     std::optional<PracticeSnapshot> practice_snapshot;
     struct DummyRecording {
-        std::vector<unsigned> input;
+        std::vector<PracticeInput> input;
         bool facing_right = false;
     };
     std::array<DummyRecording, 3> dummy_recordings{};
@@ -2146,13 +3263,15 @@ struct Menu {
 
     void save_or_restore_practice(bool restore) {
         if (!restore || !practice_snapshot) {
-            if (!restore) practice_snapshot = PracticeSnapshot{practice_players, hud_stats, hud_inputs,
+            if (!restore) practice_snapshot = PracticeSnapshot{practice_players, practice_teams, hud_stats, hud_inputs,
                 previous_push_boxes, practice_camera_center, practice_camera_bottom, practice_camera_zoom,
-                practice_stage_tick, recent_dummy_contact, training_rng_state};
+                practice_stage_tick, recent_dummy_contact, training_rng_state, training_random,
+                practice_presentation, practice_intro_cycle, practice_win_cycle};
             return;
         }
         const auto& saved = *practice_snapshot;
         practice_players = saved.fighters;
+        practice_teams = saved.teams;
         hud_stats = saved.stats;
         hud_inputs = saved.inputs;
         previous_push_boxes = saved.push_boxes;
@@ -2162,7 +3281,12 @@ struct Menu {
         practice_stage_tick = saved.stage_tick;
         recent_dummy_contact = saved.recent_dummy_contact;
         training_rng_state = saved.training_rng;
+        training_random = saved.cpu_rng;
+        practice_presentation = saved.presentation;
+        practice_intro_cycle = saved.intro_cycle;
+        practice_win_cycle = saved.win_cycle;
         practice_keys_previous = practice_keys_held;
+        practice_attack_edges = {};
         dummy_recording.reset();
         dummy_playing.reset();
         dummy_armed = false;
@@ -2210,7 +3334,7 @@ struct Menu {
         dummy_was_stunned = false;
     }
 
-    unsigned training_dummy_input(unsigned manual) {
+    PracticeInput training_dummy_input(PracticeInput manual) {
         auto& dummy = practice_players[1];
         const bool facing = practice_facing_right(1);
         if (dummy_recording) {
@@ -2226,16 +3350,17 @@ struct Menu {
             const auto& recording = dummy_recordings[*dummy_playing];
             const bool flip = training_value("OPT_STR_PLAYBACKSIDECORRECTION") == 0 &&
                 recording.facing_right != facing;
-            const auto orient = [&](unsigned input) {
-                return flip ? (input & ~3u) | ((input & 1u) << 1) | ((input & 2u) >> 1) : input;
+            const auto orient = [&](PracticeInput input) {
+                if (flip) input.held = (input.held & ~3u) | ((input.held & 1u) << 1) | ((input.held & 2u) >> 1);
+                return input;
             };
             if (std::exchange(dummy_waiting_for_reversal, false)) {
                 // FUN_0057cb60 primes the command history through the first recorded button.
                 const auto button = std::find_if(recording.input.begin(), recording.input.end(),
-                    [](unsigned input) { return (input & 0x3f0u) != 0; });
+                    [](PracticeInput input) { return ((input.held | input.attack_edges) & 0x3f0u) != 0; });
                 if (button != recording.input.end()) {
                     for (auto it = recording.input.begin(); it != button; ++it) {
-                        const auto sample = orient(*it);
+                        const auto sample = orient(*it).held;
                         const int x = int(bool(sample & 2)) - int(bool(sample & 1));
                         const int y = int(bool(sample & 8)) - int(bool(sample & 4));
                         std::move_backward(dummy.dash_input_history.begin(), dummy.dash_input_history.end() - 1,
@@ -2256,21 +3381,21 @@ struct Menu {
             }
             return input;
         }
-        if (manual) return manual;
+        if (manual.held || manual.attack_edges) return manual;
         const auto cpu = training_value("OPT_STR_TRAINING_CPU_DIFFICULTY");
         if (cpu) {
             const float distance = std::abs(practice_players[0].practice_x - dummy.practice_x);
-            if (distance > (cpu == 1 ? 180 : 120)) return facing ? 2 : 1;
-            if (cpu == 1 || dummy.active_normal >= 0) return 0;
+            if (distance > (cpu == 1 ? 180 : 120)) return {facing ? 2u : 1u};
+            if (cpu == 1 || dummy.active_normal >= 0) return {};
             const unsigned interval = 38 - static_cast<unsigned>(cpu) * 5;
-            return practice_stage_tick % interval == 0 ? 16u << (training_random() % 6) : 0;
+            return {practice_stage_tick % interval == 0 ? 16u << (training_random() % 6) : 0u};
         }
         const auto action = training_value("OPT_STR_DUMMYACTION");
-        if (action == 1) return 4;
-        if (action == 2) return 8;
+        if (action == 1) return {4};
+        if (action == 2) return {8};
         if (action == 3 && !dummy.jump_height && !dummy.jump_velocity && !dummy.jump_start)
-            return dummy.landing || !(practice_keys_previous[1] & 4u) ? 4 : 8;
-        return 0;
+            return {dummy.landing || !(practice_keys_previous[1] & 4u) ? 4u : 8u};
+        return {};
     }
 
     bool training_contact_mode(std::size_t mode, bool first) {
@@ -2286,20 +3411,25 @@ struct Menu {
     bool practice_guard(std::size_t side, const skullgirls::NormalHit& hit, bool facing_attacker) {
         auto& defender = practice_players[1 - side];
         auto& stats = hud_stats[side];
-        if (defender.jump_height || defender.jump_velocity || defender.hurt_group >= 0 ||
-            defender.active_normal >= 0 || defender.throw_phase != PracticeFighter::ThrowPhase::none) return false;
+        const auto& tag = practice_teams[1 - side].tag;
+        if ((tag && tag->kind == PracticeTag::Kind::regular) || defender.tag_entry_ticks ||
+            defender.burst_ticks || defender.burst_fall_tick ||
+            defender.hurt_group >= 0 || defender.active_normal >= 0 || defender.jump_start ||
+            defender.air_dash_direction ||
+            defender.throw_phase != PracticeFighter::ThrowPhase::none) return false;
+        const bool airborne = defender.jump_height > 0 || defender.jump_velocity > 0;
         const bool holding_back = facing_attacker ? defender.practice_left : defender.practice_right;
         const auto mode = training_value("OPT_STR_BLOCKING");
-        const bool automatic = side == 0 && !dummy_input_override() &&
+        const bool automatic = !airborne && side == 0 && !dummy_input_override() &&
             (mode == 3 ? !recent_dummy_contact || defender.blockstun != 0 :
                 mode == 4 ? training_roll(10.0f) <= 5.0f || defender.blockstun != 0 :
                 training_contact_mode(mode, recent_dummy_contact == 0));
         if (!automatic && !holding_back) return false;
         const auto block_type = training_value("OPT_STR_BLOCKTYPE");
-        const bool low = automatic ? (block_type == 1 ||
+        const bool low = !airborne && (automatic ? (block_type == 1 ||
             (block_type == 0 && (hit.height_mask == 2 ||
                 (hit.height_mask == 3 && training_value("OPT_STR_DUMMYACTION") == 1)))) :
-            defender.practice_down;
+            defender.practice_down);
         if (!(hit.height_mask & (low ? 2u : 1u))) return false;
         if (!defender.blockstun) stats.blocked_hits = 0;
         ++stats.blocked_hits;
@@ -2309,11 +3439,9 @@ struct Menu {
         defender.dash_direction = 0;
         defender.walk_direction = 0;
         defender.walk_tick = 0;
-        defender.hurt_facing_right = facing_attacker;
         defender.blockstun = std::max(1u, hit.stun * 2 / 3);
         defender.hit_stop = std::max(defender.hit_stop, hit.stop);
-        defender.movement_sprite = low ? (hit.height_mask == 2 ? 900 : 902) :
-            (hit.height_mask == 1 ? 889 : 892);
+        defender.begin_guard_stun(airborne, low, hit.height_mask, facing_attacker);
         stats.notice = L"Block";
         stats.notice_ticks = 45;
         return true;
@@ -2330,18 +3458,278 @@ struct Menu {
     }
 
     void advance_training_pushblock(float left, float right) {
-        auto& defender = practice_players[1];
-        auto& stats = hud_stats[0];
-        if (dummy_input_override() || !defender.blockstun || defender.movement_sprite == 895 ||
-            defender.movement_sprite == 904 ||
-            !training_pushblock_requested(stats.blocked_hits, defender.hit_stop, defender.blockstun)) return;
-        auto& attacker = practice_players[0];
-        attacker.practice_x = std::clamp(attacker.practice_x +
-            (defender.hurt_facing_right ? 85.0f : -85.0f), left, right);
-        defender.movement_sprite = defender.crouching ? 904 : 895;
-        spawn_combat_spark(0, CombatEffect::pushblock, {defender.practice_x, defender.crouching ? 95.0f : 160.0f});
-        stats.notice = L"Pushblock";
-        stats.notice_ticks = 45;
+        for (std::size_t side = 0; side < practice_players.size(); ++side) {
+            auto& defender = practice_players[side];
+            if (!defender.blockstun || defender.guard_phase == PracticeFighter::GuardPhase::pushblock) continue;
+            const auto punches = (defender.held_attack_buttons | defender.pressed_punches) & 7u;
+            const bool manual = defender.pressed_punches && (punches & (punches - 1));
+            const std::size_t attacker_side = 1 - side;
+            auto& stats = hud_stats[attacker_side];
+            if (!manual && (side != 1 || dummy_input_override() ||
+                !training_pushblock_requested(stats.blocked_hits, defender.hit_stop, defender.blockstun))) continue;
+            if (manual) {
+                defender.pressed_punches = 0;
+                defender.normal_input = -1;
+            }
+            auto& attacker = practice_players[attacker_side];
+            attacker.practice_x = std::clamp(attacker.practice_x +
+                (defender.hurt_facing_right ? 85.0f : -85.0f), left, right);
+            defender.guard_phase = PracticeFighter::GuardPhase::pushblock;
+            defender.guard_tick = 0;
+            const float height = defender.jump_height + (defender.crouching ? 95.0f : 160.0f);
+            spawn_combat_spark(attacker_side, CombatEffect::pushblock, {defender.practice_x, height});
+            stats.notice = L"Pushblock";
+            stats.notice_ticks = 45;
+        }
+    }
+
+    void advance_training_bursts() {
+        for (std::size_t side = 0; side < practice_players.size(); ++side) {
+            auto& defender = practice_players[side];
+            if (practice_point_snapped(side) || !defender.burst_available || defender.hurt_group < 0 || defender.fenrir_captured ||
+                defender.throw_phase != PracticeFighter::ThrowPhase::none || defender.ground_tech_direction ||
+                !(defender.pressed_punches || defender.pressed_kicks)) continue;
+            defender.burst_available = false;
+            defender.burst_ticks = PracticeFighter::burst_clip.duration();
+            defender.burst_fall_tick = 0;
+            defender.burst_connected = false;
+            defender.hurt_group = -1;
+            defender.heavy_reaction = skullgirls::HeavyReaction::none;
+            defender.hurt_hold = defender.hit_stop = defender.blockstun = 0;
+            defender.guard_phase = PracticeFighter::GuardPhase::none;
+            defender.normal_input = -1;
+            defender.pressed_punches = defender.pressed_kicks = 0;
+            defender.throw_input = false;
+            defender.buffered_special.reset();
+            defender.normal_inputs = {};
+            defender.air_hurt_fall = false;
+            defender.jump_velocity = 0;
+            defender.jump_facing_right = defender.hurt_facing_right;
+            hud_stats[side].notice = L"Burst";
+            hud_stats[side].notice_ticks = 45;
+        }
+    }
+
+    static constexpr std::array practice_assist_options{
+        "PRACTICE_ASSIST_1_1", "PRACTICE_ASSIST_1_2", "PRACTICE_ASSIST_1_3",
+        "PRACTICE_ASSIST_2_1", "PRACTICE_ASSIST_2_2", "PRACTICE_ASSIST_2_3",
+    };
+
+    PracticeFighter::SpecialCommand practice_assist_move(std::size_t side, std::size_t slot) const {
+        constexpr std::array<std::size_t, 3> defaults{2, 4, 6};
+        const auto choice = training_value(practice_assist_options[side * 3 + slot], defaults[slot]);
+        const auto strength = static_cast<unsigned>(choice % 3);
+        constexpr int moves[] = {skullgirls::updo_light, skullgirls::ground_hairball, skullgirls::ringlet_spike};
+        return {moves[choice / 3] + (choice < 3 ? static_cast<int>(strength) : 0), strength};
+    }
+
+    std::optional<std::size_t> next_practice_reserve(std::size_t side) const {
+        const auto& team = practice_teams[side];
+        for (std::size_t slot = 0; slot < fighters[side].size(); ++slot)
+            if (slot != team.active_slot && team.health[slot].life && practice_slot_is_filia(side, slot)) return slot;
+        return {};
+    }
+
+    float practice_team_gate(bool home_on_left) const {
+        const float width = 1280.0f + 320.0f * practice_camera_zoom;
+        const float left = std::clamp(practice_camera_center - width * 0.5f, 0.0f,
+                                      std::max(0.0f, practice_width - width));
+        constexpr float offscreen_margin = 160.0f;
+        return home_on_left ? left - offscreen_margin : left + width + offscreen_margin;
+    }
+
+    void begin_practice_tag(std::size_t side, std::size_t slot, PracticeTag::Kind kind) {
+        using Motion = PracticeTeamTravel::Motion;
+        const bool home_on_left = practice_facing_right(side);
+        auto& team = practice_teams[side];
+        const auto motion = kind == PracticeTag::Kind::regular ? Motion::tag_in : Motion::assist_in;
+        const float height = motion == Motion::tag_in ? 140.0f : 180.0f;
+        team.tag = PracticeTag{{slot, home_on_left, {practice_team_gate(home_on_left), height, home_on_left, motion}}, kind};
+    }
+
+    bool try_practice_snapback(std::size_t attacker_side, const skullgirls::NormalHit& hit) {
+        const auto side = 1 - attacker_side;
+        auto& team = practice_teams[side];
+        auto slot = next_practice_reserve(side);
+        if (!slot) return false;
+
+        const auto& attacker = practice_players[attacker_side];
+        std::size_t preferred = attacker.snapback_reserve;
+        if (preferred >= team.active_slot) ++preferred;
+        if (practice_slot_is_filia(side, preferred) && team.health[preferred].life) slot = preferred;
+        // The incoming slot already owns its health, even if it was on screen as an assist.
+        if (team.assist && team.assist->actor.slot == *slot) team.assist.reset();
+        if (team.departing && team.departing->slot == *slot) team.departing.reset();
+
+        auto& point = practice_players[side];
+        const bool facing = practice_facing_right(side);
+        point.take_hit(hit, facing, skullgirls::filia_snapback);
+        point.burst_available = false;
+        begin_practice_tag(side, *slot, PracticeTag::Kind::snapback);
+        team.tag->forced_exit = PracticeTeamTravel{point.practice_x, point.jump_height, facing,
+            PracticeTeamTravel::Motion::snap_out};
+        team.tag->forced_exit->pose = 769;
+        hud_stats[side].notice = L"Snapback";
+        hud_stats[side].notice_ticks = 45;
+        return true;
+    }
+
+    void tag_practice_fighter(std::size_t side, std::size_t slot, PracticeTag::Kind kind) {
+        auto& team = practice_teams[side];
+        auto& point = practice_players[side];
+        const bool guard_tag = kind == PracticeTag::Kind::guard;
+        team.health[team.active_slot] = hud_stats[side];
+        team.active_slot = slot;
+        static_cast<PracticeLife&>(hud_stats[side]) = team.health[slot];
+        PracticeFighter incoming;
+        incoming.practice_x = point.practice_x;
+        incoming.palette_slot = slot;
+        incoming.tension = point.tension - unsigned(guard_tag);
+        incoming.attack_instance = point.attack_instance;
+        incoming.ringlet_spikes = std::move(point.ringlet_spikes);
+        incoming.tricobezoar = std::move(point.tricobezoar);
+        incoming.normal_facing_right = practice_facing_right(side);
+        if (guard_tag) {
+            incoming.active_normal = incoming.prepare_special(practice_assist_move(side, slot), false);
+            ++incoming.attack_instance;
+        } else if (kind == PracticeTag::Kind::regular) {
+            incoming.tag_entry_ticks = skullgirls::team_animation_ticks(skullgirls::tag_in_taunt);
+        } else {
+            incoming.landing = 1;
+        }
+        point = std::move(incoming);
+    }
+
+    void advance_practice_tags() {
+        using Motion = PracticeTeamTravel::Motion;
+        using Kind = PracticeTag::Kind;
+        for (std::size_t side = 0; side < practice_teams.size(); ++side) {
+            auto& team = practice_teams[side];
+            if (team.departing && team.departing->travel.advance_exit(practice_team_gate(team.departing->home_on_left),
+                                                                     team.departing->home_on_left))
+                team.departing.reset();
+            if (!team.tag) continue;
+            auto& point = practice_players[side];
+            auto& tag = *team.tag;
+            using Phase = PracticeFighter::ThrowPhase;
+            if (tag.kind == Kind::snapback) {
+                if (point.hit_stop) {
+                    --point.hit_stop;
+                    continue;
+                }
+                if (tag.forced_exit) {
+                    if (tag.forced_exit->advance_exit(practice_team_gate(tag.incoming.home_on_left),
+                                                     tag.incoming.home_on_left))
+                        tag.forced_exit.reset();
+                    continue;
+                }
+            } else if (tag.kind != Kind::knockout &&
+                (point.hurt_group >= 0 || point.fenrir_captured || point.throw_phase != Phase::none)) {
+                if (tag.incoming.travel.pose) {
+                    team.departing = tag.incoming;
+                    team.departing->travel = {tag.incoming.travel.x, tag.incoming.travel.height,
+                        !tag.incoming.home_on_left, Motion::assist_out};
+                }
+                team.tag.reset();
+                continue;
+            }
+            point.practice_left = point.practice_right = point.practice_up = point.practice_down = false;
+            point.throw_input = false;
+            point.pressed_punches = point.pressed_kicks = point.held_attack_buttons = 0;
+            point.normal_input = -1;
+            if (!tag.incoming.travel.ticks)
+                tag.incoming.travel.x = practice_team_gate(tag.incoming.home_on_left);
+            if (tag.kind == Kind::regular) {
+                constexpr auto duration = skullgirls::team_animation_ticks(skullgirls::tag_out_taunt);
+                point.movement_sprite = skullgirls::team_animation_sprite(skullgirls::tag_out_taunt,
+                    tag.startup_tick, 1000);
+                point.normal_facing_right = tag.incoming.home_on_left;
+                if (tag.startup_tick < duration) ++tag.startup_tick;
+                const auto approach_ticks = static_cast<unsigned>(
+                    std::ceil(std::abs(point.practice_x - tag.incoming.travel.x) / PracticeTeamTravel::speed));
+                if (tag.startup_tick + approach_ticks < duration) continue;
+            }
+            if (!tag.incoming.travel.advance(point.practice_x)) continue;
+            if (tag.kind == Kind::regular &&
+                tag.startup_tick < skullgirls::team_animation_ticks(skullgirls::tag_out_taunt)) continue;
+            if (tag.kind != Kind::snapback) {
+                team.departing = PracticeTeamActor{team.active_slot, tag.incoming.home_on_left,
+                    {point.practice_x, point.jump_height, tag.incoming.home_on_left, Motion::tag_out}};
+                team.departing->travel.pose = 1012;
+                if (tag.kind != Kind::regular)
+                    team.departing->travel = {point.practice_x, point.jump_height,
+                        !tag.incoming.home_on_left, Motion::assist_out};
+            } else {
+                hud_stats[1 - side].combo = false;
+            }
+            tag_practice_fighter(side, tag.incoming.slot, tag.kind);
+            hud_stats[side].notice = tag.kind == Kind::knockout ? L"Next Fighter" :
+                tag.kind == Kind::guard ? L"Guard Tag" : tag.kind == Kind::snapback ? L"Snapback" : L"Tag";
+            hud_stats[side].notice_ticks = 45;
+            team.tag.reset();
+        }
+    }
+
+    void sample_practice_team_actions() {
+        for (std::size_t side = 0; side < practice_teams.size(); ++side) {
+            auto& team = practice_teams[side];
+            if (team.assist_cooldown) --team.assist_cooldown;
+            auto& point = practice_players[side];
+            const bool bursting = point.burst_ticks || point.burst_fall_tick;
+            if (team.assist || team.tag || team.departing || point.tag_entry_ticks ||
+                !practice_slot_is_filia(side, team.active_slot) || point.throw_input ||
+                point.throw_phase != PracticeFighter::ThrowPhase::none || point.hurt_group >= 0 || point.jump_start ||
+                (!bursting && (point.jump_height || point.jump_velocity)) ||
+                !(point.pressed_punches || point.pressed_kicks)) continue;
+            const unsigned edges = point.pressed_punches | (point.pressed_kicks << 3);
+            const unsigned buttons = point.held_attack_buttons | edges;
+            const auto chord = [&](unsigned punch, unsigned kick) {
+                const unsigned mask = (1u << punch) | (8u << kick);
+                return (buttons & mask) == mask && (edges & mask);
+            };
+            const bool tag_second = chord(1, 1), tag_third = chord(2, 2);
+            const bool tag = tag_second || tag_third;
+            const bool assist_second = chord(0, 1) || chord(1, 0) || chord(2, 0);
+            const bool assist_third = chord(1, 2) || chord(2, 1) || chord(0, 2);
+            if (!tag && !assist_second && !assist_third) continue;
+            std::size_t slot = (tag ? tag_third : !assist_second) ? 1 : 0;
+            if (slot >= team.active_slot) ++slot;
+            if (!practice_slot_is_filia(side, slot) || !team.health[slot].life) continue;
+
+            const bool facing_right = practice_facing_right(side);
+            const int x = int(point.practice_right) - int(point.practice_left);
+            const bool guard_tag = tag && (point.blockstun || bursting) && point.tension &&
+                x == (facing_right ? 1 : -1);
+            if ((!guard_tag && (bursting || point.guard_locked() || point.hit_stop)) ||
+                (tag && point.active_normal >= 0) || (!tag && team.assist_cooldown)) continue;
+            if (tag && !guard_tag) {
+                auto history = point.dash_input_history;
+                std::move_backward(history.begin(), history.end() - 1, history.end());
+                history.front() = skullgirls::filia_input_direction(x, int(point.practice_up) - int(point.practice_down));
+                if (point.tension && skullgirls::filia_quarter_circle(history, facing_right, false)) continue;
+            }
+
+            point.normal_input = -1;
+            point.pressed_punches = point.pressed_kicks = 0;
+            if (!tag) {
+                auto& assist = team.assist.emplace();
+                assist.actor = {slot, facing_right, {practice_team_gate(facing_right), 180, facing_right,
+                    PracticeTeamTravel::Motion::assist_in}};
+                assist.command = practice_assist_move(side, slot);
+                auto& fighter = assist.fighter;
+                fighter.palette_slot = slot;
+                fighter.attack_instance = (std::uint64_t{1} << 63) | practice_stage_tick;
+                hud_stats[side].notice = L"Assist";
+                hud_stats[side].notice_ticks = 45;
+            } else {
+                begin_practice_tag(side, slot, guard_tag ? PracticeTag::Kind::guard : PracticeTag::Kind::regular);
+                if (bursting) {
+                    // Burst_ForReal and Burst_Fall can branch to DHC_Out on the switch.
+                    team.tag->from_burst = true;
+                    point.burst_ticks = point.burst_fall_tick = 0;
+                }
+            }
+        }
     }
 
     void practice_key(WPARAM key, bool pressed) {
@@ -2355,18 +3743,36 @@ struct Menu {
             const auto action = std::find(bindings.begin(), bindings.end(), key);
             if (action == bindings.end()) continue;
             const unsigned mask = 1u << (action - bindings.begin());
-            if (pressed) practice_keys_held[side] |= mask;
-            else practice_keys_held[side] &= ~mask;
+            auto& held = practice_keys_held[side];
+            if (pressed) {
+                // Preserve attack edges even when key-up arrives before the next simulation tick.
+                if (!practice_paused && mask >= 16u && !(held & mask)) practice_attack_edges[side] |= mask;
+                held |= mask;
+            } else {
+                held &= ~mask;
+            }
             return;
         }
     }
 
     void sample_practice_keys() {
+        const std::array inputs{
+            PracticeInput{practice_keys_held[0], std::exchange(practice_attack_edges[0], 0u)},
+            training_dummy_input({practice_keys_held[1], std::exchange(practice_attack_edges[1], 0u)}),
+        };
         constexpr unsigned throw_buttons = (1u << 4) | (1u << 7);
         for (std::size_t side = 0; side < practice_players.size(); ++side) {
-            const unsigned held = practice_keys_held[side];
-            const unsigned pressed = held & ~practice_keys_previous[side];
+            const auto [held, attack_edges] = inputs[side];
+            const unsigned pressed = (held & ~practice_keys_previous[side]) | attack_edges;
             practice_keys_previous[side] = held;
+            auto& history = hud_inputs[side];
+            const unsigned shown = held | attack_edges;
+            if (shown && shown != history.last) {
+                std::move_backward(history.entries.begin(), history.entries.end() - 1, history.entries.end());
+                history.entries.front() = shown;
+                history.count = std::min(history.count + 1, history.entries.size());
+            }
+            history.last = shown;
             auto& player = practice_players[side];
             player.practice_left = (held & 1u) != 0;
             player.practice_right = (held & 2u) != 0;
@@ -2389,7 +3795,9 @@ struct Menu {
     }
 
     void reset_practice() {
+        practice_presentation = {};
         practice_keys_previous = practice_keys_held;
+        practice_attack_edges = {};
         previous_push_boxes = {};
         hud_stats = {};
         for (auto& stats : hud_stats) stats.reset_life(training_life());
@@ -2399,22 +3807,27 @@ struct Menu {
         dummy_armed = false;
         recent_dummy_contact = 0;
         for (std::size_t side = 0; side < practice_players.size(); ++side) {
+            practice_teams[side] = {};
+            for (auto& health : practice_teams[side].health) health.reset_life(training_life());
             practice_players[side] = {};
             practice_players[side].practice_x = practice_starts[side];
+            practice_players[side].tension = training_value("OPT_STR_METERLEVEL", 5);
         }
         update_practice_camera(true);
     }
 
     bool practice_input(WPARAM key, bool repeated, bool shift = false) {
-        practice_key(key, true);
+        if (!repeated) practice_key(key, true);
         if (!practice_paused) {
             if (repeated) return false;
             if (key == VK_RETURN) {
                 practice_paused = true;
+                practice_attack_edges = {};
                 pause_cursor = 0;
                 pause_page.reset();
             } else if (key == 'R') {
                 reset_practice();
+                if (shift) start_practice_intro();
             } else if (key == VK_F6 || key == VK_F7) {
                 save_or_restore_practice(key == VK_F7);
             } else if (key == VK_F8 || key == VK_F9) {
@@ -2448,9 +3861,16 @@ struct Menu {
             return true;
         }
         const bool accept = !repeated && (key == VK_RETURN || key == 'Z' || key == 'A');
-        const bool back = !repeated && (key == 'X' || key == 'S');
+        const bool escape = !repeated && key == VK_ESCAPE;
+        const bool back = escape || (!repeated && (key == 'X' || key == 'S'));
+        if (pause_page == PauseOption::commands) return command_input(key, accept, back);
         if (pause_page && (back || (accept && *pause_page != PauseOption::options))) {
             pause_page.reset();
+            return true;
+        }
+        if (escape) {
+            practice_paused = false;
+            practice_keys_previous = practice_keys_held;
             return true;
         }
         const bool training_page = pause_page == PauseOption::options;
@@ -2467,9 +3887,13 @@ struct Menu {
             const auto count = setting.choices.size();
             if (!count) return false;
             setting.choice = (setting.choice + (key == VK_RIGHT ? 1 : count - 1)) % count;
+            if (setting.keyword == "OPT_STR_METERLEVEL")
+                for (auto& fighter : practice_players) fighter.tension = static_cast<unsigned>(setting.choice);
             if (setting.keyword == "OPT_STR_LIFEBAR_LEVEL" ||
                 (setting.keyword == "OPT_STR_LIFEBAR_SETTING" && setting.choice == 2)) {
                 for (auto& stats : hud_stats) stats.reset_life(training_life());
+                for (auto& team : practice_teams)
+                    for (auto& health : team.health) health.reset_life(training_life());
             }
             return true;
         }
@@ -2478,6 +3902,8 @@ struct Menu {
         if (!training_page && option != PauseOption::resume && option != PauseOption::exit_training) {
             pause_page = option;
             pause_training_cursor = 0;
+            command_page = CommandPage::menu;
+            command_menu_cursor = command_character_cursor = command_move_cursor = 0;
             return true;
         }
         if (training_page && selected == 2) {
@@ -2489,7 +3915,12 @@ struct Menu {
         practice_keys_previous = practice_keys_held;
         if (training_page && selected == 0) reset_practice();
         if ((training_page && selected == 1) || option == PauseOption::exit_training) {
-            practice_bitmaps = {};
+            if (!training_page) {
+                practice_palette_lookups.clear();
+                practice_palette_cache.clear();
+                staged_fighters = {};
+                staged_colors = {};
+            }
             practice_background.reset();
             practice_scene.reset();
             training = training_page ? TrainingView::stage_select : TrainingView::none;
@@ -2508,7 +3939,9 @@ struct Menu {
         using Phase = PracticeFighter::ThrowPhase;
         const auto push_box = [&](std::size_t side) -> std::optional<PracticePushBox> {
             const auto& fighter = practice_players[side];
-            if (fighter.throw_phase == Phase::grabbed) return std::nullopt;
+            if (practice_point_snapped(side) || fighter.throw_phase == Phase::grabbed ||
+                fighter.fenrir_captured || fighter.ground_tech_direction)
+                return std::nullopt;
             const auto& boxes = combat_metadata[fighter.sprite() - 1].box_groups[2];
             if (boxes.empty()) return std::nullopt;
             const bool facing_right = side == 0 ? player_one_was_left : !player_one_was_left;
@@ -2577,8 +4010,307 @@ struct Menu {
         }
     }
 
+    std::optional<Gdiplus::PointF> practice_attack_overlap(unsigned sprite, float x, float y, bool facing,
+                                                        const PracticeFighter& defender, bool defender_facing) const {
+        const auto& hurts = combat_metadata[defender.sprite() - 1].box_groups[1];
+        for (const auto& hit : combat_metadata[sprite - 1].box_groups[0]) {
+            const auto attack = skullgirls::foit_world_box(hit, static_cast<int>(x), static_cast<int>(y), facing);
+            for (const auto& hurt : hurts) {
+                const auto target = skullgirls::foit_world_box(hurt, static_cast<int>(defender.practice_x),
+                    static_cast<int>(defender.jump_height), defender_facing);
+                if (skullgirls::foit_boxes_overlap(attack, target)) return contact_center(attack, target);
+            }
+        }
+        return {};
+    }
+
+    void resolve_practice_bursts() {
+        std::array<bool, 2> contacts{};
+        for (std::size_t side = 0; side < contacts.size(); ++side) {
+            const auto& fighter = practice_players[side];
+            const auto& target = practice_players[1 - side];
+            if (practice_point_snapped(1 - side) || !fighter.burst_can_hit() ||
+                target.burst_protected() || target.ground_tech_direction ||
+                target.fenrir_captured || target.throw_phase == PracticeFighter::ThrowPhase::grabbed ||
+                !practice_slot_is_filia(1 - side, practice_teams[1 - side].active_slot)) continue;
+            contacts[side] = practice_attack_overlap(fighter.movement_sprite, fighter.practice_x,
+                fighter.jump_height, fighter.hurt_facing_right, target,
+                !target.mirror(practice_facing_right(1 - side))).has_value();
+        }
+        for (std::size_t side = 0; side < contacts.size(); ++side) {
+            if (!contacts[side]) continue;
+            auto& fighter = practice_players[side];
+            auto& target = practice_players[1 - side];
+            constexpr skullgirls::NormalHit burst_hit{7, 36, 9, 3, 16};
+            fighter.burst_connected = true;
+            fighter.hit_stop = std::max(fighter.hit_stop, burst_hit.stop);
+            target.take_hit(burst_hit, practice_facing_right(1 - side), -1,
+                {skullgirls::HeavyReaction::knockback, 24, 18});
+        }
+    }
+
+    static RingletSpike::Spin ringlet_hit_spin(const PracticeFighter& target) {
+        if (target.jump_height || target.jump_velocity) return RingletSpike::Spin::none;
+        if (target.hurt_group >= 0 && target.recoil_landed && !target.waking_up) return RingletSpike::Spin::otg;
+        return RingletSpike::Spin::standard;
+    }
+
+    void advance_practice_assists(float left, float right) {
+        using Phase = PracticeAssist::Phase;
+        for (std::size_t side = 0; side < practice_teams.size(); ++side) {
+            auto& team = practice_teams[side];
+            if (!team.assist) continue;
+            auto& assist = *team.assist;
+            auto& fighter = assist.fighter;
+            auto& opponent = practice_players[1 - side];
+            auto& actor = assist.actor;
+            auto& life = team.health[actor.slot].life;
+            if (assist.phase == Phase::leaving) {
+                if (actor.travel.advance_exit(practice_team_gate(actor.home_on_left), actor.home_on_left)) {
+                    team.assist.reset();
+                    team.assist_cooldown = 45;
+                }
+                continue;
+            }
+            if (assist.phase == Phase::entering) {
+                const float spacing = actor.home_on_left ? 70.0f : -70.0f;
+                const float target = actor.travel.landing_ticks ? actor.travel.x :
+                    std::clamp(practice_players[side].practice_x + spacing, left, right);
+                if (!actor.travel.advance(target)) continue;
+                fighter.practice_x = actor.travel.x;
+                fighter.normal_facing_right = fighter.practice_x == opponent.practice_x ? side == 0 :
+                    fighter.practice_x < opponent.practice_x;
+                fighter.active_normal = fighter.prepare_special(assist.command, false);
+                assist.phase = Phase::acting;
+            }
+            auto& spikes = fighter.ringlet_spikes;
+            spikes.erase(std::remove_if(spikes.begin(), spikes.end(),
+                [](RingletSpike& spike) { return !spike.advance(); }), spikes.end());
+            fighter.tick(opponent.practice_x, left, right, side == 0, practice_ceiling(), filia_scripts());
+            const auto outward_facing = !fighter.mirror(fighter.practice_x <= opponent.practice_x);
+            if (fighter.hurt_group < 0 && opponent.normal_hit && opponent.striking_normal >= 0 &&
+                opponent.movement_sprite >= 198) {
+                if (const auto impact = practice_attack_overlap(opponent.movement_sprite, opponent.practice_x,
+                    opponent.jump_height, opponent.normal_facing_right, fighter, outward_facing)) {
+                    const auto move = opponent.striking_normal;
+                    const auto hit_index = opponent.normal_hit - skullgirls::filia_normal_hits[move];
+                    const auto damage = skullgirls::filia_hit_damage[move][hit_index];
+                    if (training_value("OPT_STR_LIFEBAR_SETTING") != 2) {
+                        const unsigned minimum = !training_value("OPT_STR_DEATHALLOWED");
+                        life = std::max(minimum, life - std::min(life, damage));
+                    }
+                    fighter.take_hit(*opponent.normal_hit, !opponent.normal_facing_right, move);
+                    spawn_combat_spark(1 - side, CombatEffect::medium, *impact);
+                }
+            }
+            if (!practice_point_snapped(1 - side) && !opponent.burst_protected() &&
+                !opponent.ground_tech_direction && !opponent.fenrir_captured &&
+                opponent.throw_phase != PracticeFighter::ThrowPhase::grabbed &&
+                practice_slot_is_filia(1 - side, practice_teams[1 - side].active_slot)) {
+                const bool facing = !opponent.mirror(practice_facing_right(1 - side));
+                const auto strike = [&](const skullgirls::NormalHit& hit, int move, unsigned damage,
+                                        float origin_x, bool forward, Gdiplus::PointF impact) {
+                    if (practice_guard(side, hit, origin_x >= opponent.practice_x)) {
+                        spawn_combat_spark(side, CombatEffect::block, impact);
+                        return false;
+                    }
+                    opponent.take_hit(hit, !forward, move, practice_hit_reaction(side,
+                        move == skullgirls::ringlet_spike ? skullgirls::ringlet_spike_reaction :
+                            skullgirls::HeavyReaction{}));
+                    record_practice_damage(side, damage, move, fighter.attack_instance);
+                    spawn_combat_spark(side, CombatEffect::medium, impact);
+                    return true;
+                };
+                if (fighter.normal_hit && fighter.normal_hit != fighter.last_contact && fighter.striking_normal >= 0 &&
+                    fighter.movement_sprite >= 198) {
+                    if (const auto impact = practice_attack_overlap(fighter.movement_sprite, fighter.practice_x,
+                        fighter.jump_height, fighter.normal_facing_right, opponent, facing)) {
+                        const auto move = fighter.striking_normal;
+                        const auto hit_index = fighter.normal_hit - skullgirls::filia_normal_hits[move];
+                        fighter.last_contact = fighter.normal_hit;
+                        fighter.hit_stop = std::max(fighter.hit_stop, fighter.normal_hit->stop);
+                        strike(*fighter.normal_hit, move, skullgirls::filia_hit_damage[move][hit_index],
+                               fighter.practice_x, fighter.normal_facing_right, *impact);
+                    }
+                }
+                for (auto& spike : spikes) {
+                    if (!spike.can_hit()) continue;
+                    if (const auto impact = practice_attack_overlap(spike.sprite(), spike.x, 0,
+                        spike.facing_right, opponent, facing)) {
+                        spike.hit = true;
+                        const auto spin = ringlet_hit_spin(opponent);
+                        if (strike(skullgirls::ringlet_spike_hit, skullgirls::ringlet_spike, 600,
+                                   spike.x, spike.facing_right, *impact)) spike.spin = spin;
+                    }
+                }
+            }
+            if (fighter.hurt_group < 0 && !fighter.jump_height &&
+                (!life || (fighter.active_normal < 0 && spikes.empty()))) {
+                actor.travel = {fighter.practice_x, fighter.jump_height, !actor.home_on_left,
+                    PracticeTeamTravel::Motion::assist_out};
+                assist.phase = Phase::leaving;
+            }
+        }
+    }
+
+    void start_practice_intro() {
+        const auto choice = training_value("PRACTICE_FILIA_INTRO");
+        if (choice == 4 || (!practice_slot_is_filia(0, 0) && !practice_slot_is_filia(1, 0))) return;
+        using Phase = PracticePresentation::Phase;
+        practice_presentation.phase = Phase::intro;
+        const unsigned cycle = practice_intro_cycle++;
+        for (std::size_t side = 0; side < practice_players.size(); ++side) {
+            if (!practice_slot_is_filia(side, 0)) continue;
+            auto& actor = practice_presentation.actors[side];
+            actor.variant = choice ? static_cast<unsigned>(choice - 1) : (cycle + side) % 3;
+            actor.facing_right = practice_facing_right(side);
+            actor.initial_pose = skullgirls::filia_intros[actor.variant].pose_at(1, 2);
+            actor.pose = actor.initial_pose;
+        }
+    }
+
+    bool begin_practice_knockout() {
+        using Phase = PracticePresentation::Phase;
+        using Reaction = skullgirls::HeavyReaction;
+        auto& scene = practice_presentation;
+        for (std::size_t side = 0; side < hud_stats.size(); ++side)
+            scene.defeated[side] = !hud_stats[side].life && !next_practice_reserve(side);
+        if (!scene.defeated[0] && !scene.defeated[1]) return false;
+
+        scene.phase = Phase::knockout;
+        scene.tick = 0;
+        dummy_armed = false;
+        dummy_recording.reset();
+        dummy_playing.reset();
+        for (std::size_t side = 0; side < practice_players.size(); ++side) {
+            auto& fighter = practice_players[side];
+            auto& team = practice_teams[side];
+            auto& stats = hud_stats[side];
+            stats.combo = false;
+            stats.notice_ticks = 0;
+            team.assist.reset();
+            team.tag.reset();
+            team.departing.reset();
+            fighter.burst_available = false;
+            fighter.throw_input = false;
+            fighter.normal_input = fighter.queued_followup = -1;
+            fighter.pressed_punches = fighter.pressed_kicks = fighter.held_attack_buttons = 0;
+            fighter.practice_left = fighter.practice_right = fighter.practice_down = fighter.practice_up = false;
+            fighter.buffered_special.reset();
+            if (!scene.defeated[side]) continue;
+            if (fighter.hurt_group < 0 || fighter.heavy_reaction == Reaction::none ||
+                fighter.heavy_reaction == Reaction::air_launch || fighter.fenrir_captured ||
+                fighter.throw_phase != PracticeFighter::ThrowPhase::none) {
+                constexpr skullgirls::NormalHit knockout_hit{0, 0, 0, 3};
+                fighter.take_hit(knockout_hit, practice_facing_right(side), -1, {Reaction::sweep, 8, 14});
+            }
+        }
+        return true;
+    }
+
+    void advance_practice_presentation() {
+        using namespace skullgirls;
+        using Phase = PracticePresentation::Phase;
+        auto& scene = practice_presentation;
+        const unsigned tick = scene.tick++;
+        ++practice_stage_tick;
+        if (scene.phase == Phase::intro) {
+            bool finished = true;
+            for (std::size_t side = 0; side < scene.actors.size(); ++side) {
+                auto& actor = scene.actors[side];
+                if (!actor.initial_pose) continue;
+                const auto clip = filia_intros[actor.variant];
+                const auto duration = clip.duration();
+                if (tick >= duration) {
+                    // IntroPose_ExtraIdle uses the standing poses while the round is still locked.
+                    actor.pose = 0;
+                    actor.effect_pose = 0;
+                    practice_players[side].idle_tick = (tick - duration) % stand_idle_ticks;
+                    continue;
+                }
+                finished = false;
+                actor.pose = clip.pose_at(tick, actor.initial_pose);
+                constexpr DefenseClip bow_hat{intro_bow_hat};
+                if (actor.variant == 2 && tick >= intro_bow_hat_tick) {
+                    const auto effect_tick = tick - intro_bow_hat_tick;
+                    actor.effect_pose = effect_tick < bow_hat.duration() ? bow_hat.pose_at(effect_tick, 0) : 0;
+                }
+            }
+            if (finished || practice_attack_edges[0] || practice_attack_edges[1]) {
+                scene = {};
+                practice_attack_edges = {};
+                practice_keys_previous = practice_keys_held;
+            }
+            return;
+        }
+        if (scene.phase == Phase::knockout) {
+            bool settled = true;
+            for (std::size_t side = 0; side < practice_players.size(); ++side) {
+                if (!practice_slot_is_filia(side, practice_teams[side].active_slot)) continue;
+                auto& actor = scene.actors[side];
+                auto& fighter = practice_players[side];
+                if (scene.defeated[side] && !actor.pose && !fighter.hit_stop &&
+                    !fighter.jump_height && (fighter.recoil_landed || fighter.hurt_group < 0)) {
+                    actor.pose = fighter.heavy_reaction == HeavyReaction::back_knockdown ? 751 : 756;
+                    actor.facing_right = fighter.hurt_facing_right;
+                }
+                if (scene.defeated[side] ? actor.pose != 0 :
+                    !fighter.jump_height && !fighter.hit_stop && fighter.active_normal < 0 && fighter.hurt_group < 0 &&
+                        fighter.throw_phase == PracticeFighter::ThrowPhase::none) continue;
+                settled = false;
+                fighter.tick(practice_players[1 - side].practice_x, 0, practice_width, side == 0,
+                             practice_ceiling(), filia_scripts());
+            }
+            if ((!settled || tick < 44) && tick < 119) return;
+
+            scene.phase = Phase::results;
+            scene.tick = 0;
+            const auto choice = training_value("PRACTICE_FILIA_WIN");
+            const unsigned cycle = practice_win_cycle++;
+            for (std::size_t side = 0; side < practice_players.size(); ++side) {
+                auto& actor = scene.actors[side];
+                auto& fighter = practice_players[side];
+                fighter.ringlet_spikes.clear();
+                fighter.tricobezoar.reset();
+                fighter.jump_height = 0;
+                if (!practice_slot_is_filia(side, practice_teams[side].active_slot)) continue;
+                actor.variant = choice ? static_cast<unsigned>(choice - 1) : cycle % 3;
+                actor.facing_right = practice_facing_right(side);
+                actor.starts_facing_right = !fighter.mirror(actor.facing_right);
+                actor.crouching = !scene.defeated[side] && fighter.crouching;
+                actor.initial_pose = scene.defeated[side] ? 1095 : fighter.sprite();
+                actor.pose = actor.initial_pose;
+            }
+            return;
+        }
+        for (std::size_t side = 0; side < scene.actors.size(); ++side) {
+            auto& actor = scene.actors[side];
+            if (!actor.pose) continue;
+            unsigned elapsed = tick;
+            const auto play_prefix = [&](DefenseClip clip) {
+                if (elapsed < clip.duration()) {
+                    actor.pose = clip.pose_at(elapsed, actor.initial_pose);
+                    return true;
+                }
+                elapsed -= clip.duration();
+                return false;
+            };
+            if (!scene.defeated[side]) {
+                if (actor.starts_facing_right != actor.facing_right &&
+                    play_prefix(actor.crouching ? DefenseClip(result_turn_crouched) : DefenseClip(result_turn)))
+                    continue;
+                if (actor.crouching && play_prefix(result_stand_up)) continue;
+            }
+            const auto& clips = scene.defeated[side] ? filia_loss : filia_wins[actor.variant];
+            if (!play_prefix(clips.start))
+                actor.pose = clips.loop.pose_at(elapsed % clips.loop.duration(), actor.pose);
+        }
+    }
+
     void practice_tick() {
         if (practice_paused) return;
+        for (auto& team : practice_teams)
+            for (auto& health : team.health) health.advance_life();
         for (auto& stats : hud_stats) {
             stats.advance_life();
             auto& sparks = stats.sparks;
@@ -2587,28 +4319,43 @@ struct Menu {
                 return spark.age >= combat_effects[static_cast<std::size_t>(spark.effect)].ticks;
             }), sparks.end());
         }
-        if (training_value("OPT_STR_DEATHALLOWED") &&
-            (!hud_stats[0].life || !hud_stats[1].life)) return;
-        const auto manual_dummy = practice_keys_held[1];
-        practice_keys_held[1] = training_dummy_input(manual_dummy);
-        sample_practice_keys();
-        for (std::size_t side = 0; side < hud_inputs.size(); ++side) {
-            auto& history = hud_inputs[side];
-            const unsigned input = practice_keys_held[side];
-            if (input && input != history.last) {
-                std::move_backward(history.entries.begin(), history.entries.end() - 1, history.entries.end());
-                history.entries.front() = input;
-                history.count = std::min(history.count + 1, history.entries.size());
-            }
-            history.last = input;
+        if (practice_presentation.phase != PracticePresentation::Phase::none ||
+            (training_value("OPT_STR_DEATHALLOWED") && begin_practice_knockout())) {
+            advance_practice_presentation();
+            return;
         }
-        practice_keys_held[1] = manual_dummy;
+        if (training_value("OPT_STR_DEATHALLOWED")) {
+            for (std::size_t side = 0; side < practice_teams.size(); ++side) {
+                if (hud_stats[side].life) continue;
+                if (practice_point_snapped(side)) continue;
+                if (const auto slot = next_practice_reserve(side)) {
+                    auto& team = practice_teams[side];
+                    if (team.assist && team.assist->phase != PracticeAssist::Phase::leaving) {
+                        auto& assist = *team.assist;
+                        const bool acting = assist.phase == PracticeAssist::Phase::acting;
+                        assist.actor.travel = {acting ? assist.fighter.practice_x : assist.actor.travel.x,
+                            acting ? assist.fighter.jump_height : assist.actor.travel.height,
+                            !assist.actor.home_on_left, PracticeTeamTravel::Motion::assist_out};
+                        assist.phase = PracticeAssist::Phase::leaving;
+                    }
+                    if (team.tag) {
+                        team.tag->kind = PracticeTag::Kind::knockout;
+                        team.tag->incoming.travel.motion = PracticeTeamTravel::Motion::assist_in;
+                    } else if (!team.departing) {
+                        begin_practice_tag(side, *slot, PracticeTag::Kind::knockout);
+                    }
+                    hud_stats[1 - side].combo = false;
+                }
+            }
+        }
+        sample_practice_keys();
         for (std::size_t side = 0; side < hud_stats.size(); ++side) {
             auto& stats = hud_stats[side];
             if (stats.notice_ticks) --stats.notice_ticks;
-            const auto& target = practice_players[1 - side];
+            auto& target = practice_players[1 - side];
             if (stats.combo && target.hurt_group < 0 && target.throw_phase != PracticeFighter::ThrowPhase::grabbed) {
                 stats.combo = false;
+                target.burst_available = false;
                 if (training_value("OPT_STR_LIFEBAR_SETTING") == 0)
                     hud_stats[1 - side].life = training_life();
             }
@@ -2621,7 +4368,10 @@ struct Menu {
         const auto& dummy = practice_players[1];
         if (dummy.hurt_group >= 0 || dummy.blockstun) recent_dummy_contact = 25;
         if (recent_dummy_contact) --recent_dummy_contact;
+        advance_training_bursts();
         advance_training_pushblock(left, right);
+        sample_practice_team_actions();
+        advance_practice_tags();
         const float x1 = practice_players[0].practice_x;
         const float x2 = practice_players[1].practice_x;
         const auto advance_fighter = [&](std::size_t side, float opponent_x) {
@@ -2631,52 +4381,88 @@ struct Menu {
                 spikes.erase(std::remove_if(spikes.begin(), spikes.end(),
                     [](RingletSpike& spike) { return !spike.advance(); }), spikes.end());
             }
+            if (fighter.tricobezoar) {
+                auto& projectile = *fighter.tricobezoar;
+                projectile.advance();
+                if (projectile.x < -300 || projectile.x > practice_width + 300 ||
+                    projectile.y < -300 || projectile.y > practice_height + 300) fighter.tricobezoar.reset();
+            }
             const bool was_idle = !fighter.movement_sprite;
             const bool frozen = fighter.hit_stop != 0;
+            const auto previous_burst_ticks = fighter.burst_ticks;
+            const bool guard_locked = fighter.guard_locked();
             const bool was_above_ground = fighter.jump_height > 0;
+            const bool was_recovering = fighter.air_hurt_fall;
+            const bool was_ground_teching = fighter.ground_tech_direction != 0;
+            const bool was_at_wall = fighter.wall_bounce_tick != 0;
             const bool awaiting_bounce = fighter.heavy_reaction == skullgirls::HeavyReaction::ground_bounce &&
-                !fighter.recoil_ticks;
-            fighter.tick(opponent_x, left, right, side == 0);
+                !fighter.recoil_landed;
+            const auto& tag = practice_teams[side].tag;
+            if (tag && (tag->kind == PracticeTag::Kind::regular || tag->kind == PracticeTag::Kind::snapback ||
+                        tag->from_burst)) {
+                fighter.normal_hit = nullptr;
+                fighter.striking_normal = -1;
+            } else {
+                fighter.tick(opponent_x, left, right, side == 0, practice_ceiling(), filia_scripts());
+                if (!guard_locked && !frozen) {
+                    const auto& opponent = practice_players[1 - side];
+                    const bool facing_right = practice_facing_right(side);
+                    const bool holding_back = facing_right ? fighter.practice_left : fighter.practice_right;
+                    const bool nearby_attack = opponent.active_normal >= 0 &&
+                        std::abs(opponent_x - fighter.practice_x) < 360.0f;
+                    fighter.advance_guard_pose(holding_back && nearby_attack, facing_right);
+                }
+            }
+            if (!was_recovering && fighter.air_hurt_fall)
+                spawn_combat_spark(side, CombatEffect::air_recovery, {fighter.practice_x, fighter.jump_height + 90});
+            constexpr auto burst_effect_tick = PracticeFighter::burst_clip.duration() -
+                PracticeFighter::burst_clip.record_tick(6) - 1;
+            if (previous_burst_ticks == burst_effect_tick + 1 && fighter.burst_ticks == burst_effect_tick)
+                spawn_combat_spark(side, CombatEffect::burst, {fighter.practice_x, fighter.jump_height + 250});
+            if (!was_ground_teching && fighter.ground_tech_direction) {
+                hud_stats[side].notice = L"Ground Tech";
+                hud_stats[side].notice_ticks = 45;
+            }
+            if (!was_at_wall && fighter.wall_bounce_tick)
+                spawn_combat_spark(side, CombatEffect::wall_impact, {fighter.practice_x, fighter.jump_height + 90});
             if ((was_above_ground && !fighter.jump_height && fighter.recoil_landed) ||
-                (awaiting_bounce && fighter.recoil_ticks == 1))
+                (awaiting_bounce && fighter.recoil_landed))
                 spawn_combat_spark(side, CombatEffect::ground_impact, {fighter.practice_x, 0});
             if (!frozen)
-                fighter.idle_tick = was_idle && !fighter.movement_sprite ? (fighter.idle_tick + 1) % 83 : 0;
+                fighter.idle_tick = was_idle && !fighter.movement_sprite
+                    ? (fighter.idle_tick + 1) % skullgirls::stand_idle_ticks : 0;
         };
         advance_fighter(0, x2);
         if (std::string_view(roster[fighters[1].front()]) == "filia") {
             advance_fighter(1, x1);
             separate_practice_fighters(x1 <= x2, left, right);
         }
+        resolve_practice_bursts();
 
         std::array<const skullgirls::NormalHit*, 2> contacts{};
         std::array<RingletSpike*, 2> spike_contacts{};
+        std::array<bool, 2> skullball_contacts{};
         std::array<Gdiplus::PointF, 2> impacts{};
         for (std::size_t side = 0; side < practice_players.size(); ++side) {
             auto& player = practice_players[side];
             const auto& opponent = practice_players[1 - side];
-            if (std::string_view(roster[fighters[1 - side].front()]) != "filia") continue;
-            if (!player.normal_hit && player.ringlet_spikes.empty()) continue;
-            const unsigned defender_sprite = opponent.sprite();
-            const auto& hurts = combat_metadata[defender_sprite - 1].box_groups[1];
+            if (practice_point_snapped(1 - side) || opponent.ground_tech_direction || opponent.burst_protected() ||
+                opponent.fenrir_captured || opponent.throw_phase == PracticeFighter::ThrowPhase::grabbed ||
+                !practice_slot_is_filia(1 - side, practice_teams[1 - side].active_slot)) continue;
+            if (!player.normal_hit && player.ringlet_spikes.empty() && !player.tricobezoar) continue;
             const bool opponent_facing_right = !opponent.mirror(practice_facing_right(1 - side));
             const auto overlaps = [&](unsigned sprite, float x, float y, bool facing) {
-                for (const auto& hit : combat_metadata[sprite - 1].box_groups[0]) {
-                    const auto world_hit = skullgirls::foit_world_box(hit, static_cast<int>(x), static_cast<int>(y), facing);
-                    for (const auto& hurt : hurts) {
-                        const auto world_hurt = skullgirls::foit_world_box(hurt, static_cast<int>(opponent.practice_x),
-                            static_cast<int>(opponent.jump_height), opponent_facing_right);
-                        if (skullgirls::foit_boxes_overlap(world_hit, world_hurt)) {
-                            impacts[side] = contact_center(world_hit, world_hurt);
-                            return true;
-                        }
-                    }
-                }
-                return false;
+                const auto impact = practice_attack_overlap(sprite, x, y, facing, opponent, opponent_facing_right);
+                if (impact) impacts[side] = *impact;
+                return impact.has_value();
             };
             if (player.movement_sprite >= 198 && player.normal_hit && player.normal_hit != player.last_contact &&
                 overlaps(player.movement_sprite, player.practice_x, player.jump_height, player.normal_facing_right)) {
                 contacts[side] = player.normal_hit;
+            } else if (player.tricobezoar && player.tricobezoar->can_hit() &&
+                overlaps(player.tricobezoar->sprite(), player.tricobezoar->x, player.tricobezoar->y,
+                    player.tricobezoar->facing_right)) {
+                skullball_contacts[side] = true;
             } else {
                 for (auto& spike : player.ringlet_spikes) {
                     const auto sprite = spike.sprite();
@@ -2690,6 +4476,20 @@ struct Menu {
         for (std::size_t side = 0; side < contacts.size(); ++side) {
             auto& player = practice_players[side];
             auto& opponent = practice_players[1 - side];
+            if (skullball_contacts[side]) {
+                const auto projectile = *player.tricobezoar;
+                player.tricobezoar.reset();
+                if (practice_guard(side, skullgirls::tricobezoar_hit, projectile.x >= opponent.practice_x)) {
+                    spawn_combat_spark(side, CombatEffect::block, impacts[side]);
+                } else {
+                    opponent.take_hit(skullgirls::tricobezoar_hit, !projectile.facing_right, skullgirls::tricobezoar,
+                        practice_hit_reaction(side, {skullgirls::HeavyReaction::launch, 10, 45}));
+                    record_practice_damage(side, projectile.sprite() == 1192 ? 4750 : 3000,
+                                           skullgirls::tricobezoar, projectile.attack_instance);
+                    spawn_combat_spark(side, CombatEffect::heavy, impacts[side]);
+                }
+                continue;
+            }
             if (auto* spike = spike_contacts[side]) {
                 spike->hit = true;
                 if (player.active_normal < 0 || player.active_normal == skullgirls::ringlet_spike)
@@ -2698,13 +4498,14 @@ struct Menu {
                     spawn_combat_spark(side, CombatEffect::block, impacts[side]);
                     continue;
                 }
+                spike->spin = ringlet_hit_spin(opponent);
                 auto hit = skullgirls::ringlet_spike_hit;
                 if (!opponent.jump_height && !opponent.jump_velocity)
                     hit.stop = skullgirls::ringlet_grounded_impact_hold;
                 opponent.take_hit(hit, !spike->facing_right, skullgirls::ringlet_spike,
-                    skullgirls::ringlet_spike_reaction);
+                    practice_hit_reaction(side, skullgirls::ringlet_spike_reaction));
                 spawn_combat_spark(side, CombatEffect::medium, impacts[side], 0.8f);
-                record_practice_damage(side, 600);
+                record_practice_damage(side, 600, skullgirls::ringlet_spike, spike->attack_instance);
                 if (training_value("OPT_STR_TRAININGSHOWCROSSUPS") &&
                     (spike->x < opponent.practice_x) != (player.practice_x < opponent.practice_x)) {
                     hud_stats[side].notice = L"Cross-up";
@@ -2719,9 +4520,12 @@ struct Menu {
             player.hit_stop = std::max(player.hit_stop, hit->stop);
             const bool facing_attacker = player.practice_x >= opponent.practice_x;
             if (practice_guard(side, *hit, facing_attacker)) {
+                if (player.striking_normal == skullgirls::air_hairball) ++player.airball_blocks;
                 spawn_combat_spark(side, CombatEffect::block, impacts[side]);
                 continue;
             }
+            player.normal_hit_landed = true;
+            if (player.striking_normal == skullgirls::air_hairball) ++player.airball_hits;
             const auto counter = training_value("OPT_STR_FORCECOUNTERHIT");
             const bool force_counter = side == 0 && !dummy_input_override() &&
                 training_contact_mode(counter == 1 ? 3 : counter == 3 ? 1 : counter, recent_dummy_contact == 0);
@@ -2733,31 +4537,82 @@ struct Menu {
                 hud_stats[side].notice = L"Cross-up";
                 hud_stats[side].notice_ticks = 60;
             }
-            opponent.take_hit(*hit, !player.normal_facing_right, player.striking_normal);
+            if (player.striking_normal != skullgirls::filia_snapback || !try_practice_snapback(side, *hit))
+                opponent.take_hit(*hit, !player.normal_facing_right, player.striking_normal, practice_hit_reaction(side));
             if (player.striking_normal >= 0) {
                 const auto move = player.striking_normal;
+                if (move == skullgirls::fenrir_start || move == skullgirls::fenrir_rise ||
+                    move == skullgirls::fenrir_peak) player.fenrir_connected = true;
                 const auto contact = hit - skullgirls::filia_normal_hits[move];
                 constexpr CombatEffect l = CombatEffect::light, m = CombatEffect::medium, h = CombatEffect::heavy;
                 // Filia's normal hit descriptors store strength tiers 1, 2 and 3.
-                constexpr CombatEffect strike_effects[skullgirls::ringlet_spike + 1][2] = {
+                constexpr CombatEffect strike_effects[skullgirls::filia_taunt + 1][2] = {
                     {l}, {m}, {h}, {l}, {m}, {h}, {l}, {m}, {h}, {l}, {m, m}, {h},
                     {l}, {m}, {h}, {l}, {m, m}, {h}, {l}, {l}, {m, m}, {m, m}, {h, h}, {m, h}, {m, h},
                 };
-                spawn_combat_spark(side, strike_effects[move][contact != 0], impacts[side]);
+                const auto effect = move >= skullgirls::gregor_start ? CombatEffect::heavy :
+                    strike_effects[move][contact != 0];
+                spawn_combat_spark(side, effect, impacts[side]);
                 const auto damage = skullgirls::filia_hit_damage[move][contact];
-                record_practice_damage(side, damage);
+                record_practice_damage(side, damage, move, player.attack_instance);
             }
         }
+        resolve_fenrir(left, right);
         resolve_practice_throws(left, right);
+        advance_practice_assists(left, right);
         update_practice_camera(false);
     }
 
-    void record_practice_damage(std::size_t side, unsigned damage) {
+    void resolve_fenrir(float left, float right) {
+        using namespace skullgirls;
+        for (std::size_t side = 0; side < practice_players.size(); ++side) {
+            auto& attacker = practice_players[side];
+            auto& defender = practice_players[1 - side];
+            const auto move = attacker.active_normal;
+            const float forward = attacker.normal_facing_right ? 1.0f : -1.0f;
+            const auto impact = Gdiplus::PointF{attacker.practice_x + 150 * forward, attacker.jump_height};
+            if (move == fenrir_bite && attacker.fenrir_connected && attacker.normal_frame == 4 &&
+                !attacker.normal_tick && !defender.fenrir_captured) {
+                defender.fenrir_captured = true;
+                defender.active_normal = defender.queued_followup = -1;
+                defender.hurt_facing_right = !attacker.normal_facing_right;
+                defender.movement_sprite = throw_victim_pose(4);
+                record_practice_damage(side, 3500);
+                spawn_combat_spark(side, CombatEffect::heavy, impact);
+            }
+            if (!defender.fenrir_captured) continue;
+            if (move == fenrir_bite || move == fenrir_dive) {
+                defender.practice_x = std::clamp(impact.X, left, right);
+                defender.jump_height = impact.Y + 100;
+                defender.jump_velocity = 0;
+                continue;
+            }
+            constexpr NormalHit release{0, 16, 0, 3};
+            if (move == fenrir_land) {
+                record_practice_damage(side, 500);
+                spawn_combat_spark(side, CombatEffect::ground_impact, {defender.practice_x, 0});
+                defender.take_hit(release, !attacker.normal_facing_right, fenrir_land,
+                    {HeavyReaction::ground_bounce, 18, -18});
+            } else {
+                defender.take_hit(release, !attacker.normal_facing_right, -1);
+            }
+        }
+    }
+
+    void record_practice_damage(std::size_t side, unsigned damage, int move = -1, std::uint64_t instance = 0) {
         if (!damage) return;
         if (side == 0) recent_dummy_contact = 25;
         auto& stats = hud_stats[side];
-        if (!stats.combo) stats.damage = stats.hits = 0;
+        if (!stats.combo) {
+            stats.damage = stats.hits = 0;
+            stats.combo_attacks = {};
+        }
         stats.combo = true;
+        if (move >= 0 && instance) {
+            auto& last = stats.combo_attacks[move];
+            if (last && last != instance) practice_players[1 - side].burst_available = true;
+            last = instance;
+        }
         stats.last_hit = damage;
         stats.damage += damage;
         stats.maximum = std::max(stats.maximum, stats.damage);
@@ -2770,11 +4625,14 @@ struct Menu {
     }
 
     void prepare_hud_portraits() {
-        for (std::size_t side = 0; side < hud_portraits.size(); ++side) {
-            const auto fighter = fighters[side].front();
+        skullgirls::SpriteArchive assets(game_data / "ui.gfs");
+        hud_portraits = {};
+        for (std::size_t side = 0; side < hud_portraits.size(); ++side)
+        for (std::size_t slot = 0; slot < fighters[side].size(); ++slot) {
+            const auto fighter = fighters[side][slot];
             const auto name = "ui/palettized_hud_art/character_" + std::string(roster[fighter]);
             const auto load = [&](const char* suffix) {
-                return read_hud_portrait_layer(skullgirls::read_sprite_asset(game_data / "ui.gfs", name + suffix));
+                return read_hud_portrait_layer(assets.read(name + suffix));
             };
             const auto index = load("_colors.pcx");
             const auto shade = load("_shade.pcx");
@@ -2794,7 +4652,7 @@ struct Menu {
                 // Portrait color groups are encoded five PCX indices apart.
                 portrait.pixels[i * 3 + 2] = index.pixels[i] ? index.pixels[i] / 5 + 1 : 0;
             }
-            hud_portraits[side] = make_fighter_bitmap(portrait, fighter, locked_colors[side].front());
+            hud_portraits[side][slot] = make_fighter_bitmap(portrait, fighter, locked_colors[side][slot]);
         }
     }
 
@@ -2804,21 +4662,27 @@ struct Menu {
             auto& attacker = practice_players[side];
             auto& defender = practice_players[1 - side];
             const float forward = attacker.throw_facing_right ? 1.0f : -1.0f;
-            // Move 117 arms the grab on its ninth serialized tick.
-            if (attacker.throw_phase == Phase::start && attacker.throw_tick >= 9 && attacker.movement_sprite == 401 &&
-                defender.throw_phase != Phase::grabbed && defender.hurt_group < 0 &&
-                defender.jump_height == 0 && defender.jump_velocity == 0 &&
+            const bool air = attacker.aerial_throw;
+            const bool defender_air = defender.jump_height > 0 || defender.jump_velocity > 0;
+            const unsigned grab_pose = air ? 441 : 401;
+            // Ground throw tests contact as move 117/118 advances through its first grab record.
+            if (attacker.throw_phase == Phase::start && attacker.throw_tick >= (air ? 10u : 7u) &&
+                (!air || attacker.throw_tick <= 12) &&
+                attacker.movement_sprite == grab_pose && (!air || attacker.jump_height > 0) &&
+                defender.throw_phase != Phase::grabbed && !defender.fenrir_captured && defender.hurt_group < 0 &&
+                defender.throw_phase != Phase::tech && !practice_point_snapped(1 - side) && !defender.ground_tech_direction &&
+                !defender.burst_protected() && defender_air == air &&
                 std::string_view(roster[fighters[1 - side].front()]) == "filia") {
-                const auto& grab = combat_metadata[400].box_groups[0];
+                const auto& grab = combat_metadata[grab_pose - 1].box_groups[0];
                 const unsigned pose = defender.sprite();
                 const auto& hurt = combat_metadata[pose - 1].box_groups[1];
                 for (const auto& box : grab) {
                     if (attacker.throw_phase != Phase::start) break;
-                    const auto world_grab = skullgirls::foit_world_box(box, static_cast<int>(attacker.practice_x), 0,
-                        attacker.throw_facing_right);
+                    const auto world_grab = skullgirls::foit_world_box(box, static_cast<int>(attacker.practice_x),
+                        static_cast<int>(attacker.jump_height), attacker.throw_facing_right);
                     for (const auto& target : hurt) {
                         const auto world_hurt = skullgirls::foit_world_box(target, static_cast<int>(defender.practice_x),
-                            0, !defender.mirror(practice_facing_right(1 - side)));
+                            static_cast<int>(defender.jump_height), !defender.mirror(practice_facing_right(1 - side)));
                         if (skullgirls::foit_boxes_overlap(world_grab, world_hurt)) {
                             const auto impact = contact_center(world_grab, world_hurt);
                             const auto tech = training_value("OPT_STR_THROWTECH");
@@ -2826,11 +4690,20 @@ struct Menu {
                                 (tech == 1 || (tech == 2 && recent_dummy_contact != 0) ||
                                     (tech == 3 && training_roll(10.0f) <= 5.0f));
                             if (automatic_tech || defender.throw_input || defender.throw_phase == Phase::start) {
-                                attacker.throw_phase = Phase::whiff;
-                                attacker.throw_tick = 0;
-                                defender.throw_phase = Phase::none;
-                                defender.throw_input = false;
-                                defender.hit_stop = std::max(defender.hit_stop, 5u);
+                                defender.throw_facing_right = !attacker.throw_facing_right;
+                                for (auto* fighter : {&attacker, &defender}) {
+                                    fighter->throw_phase = Phase::tech;
+                                    fighter->aerial_throw = air;
+                                    fighter->throw_tick = 0;
+                                    fighter->throw_input = false;
+                                    fighter->hit_stop = 0;
+                                    fighter->active_normal = fighter->queued_followup = -1;
+                                    fighter->normal_hit = nullptr;
+                                    fighter->blockstun = 0;
+                                    fighter->dash_direction = fighter->air_dash_direction = 0;
+                                    fighter->jump_horizontal = 0;
+                                    fighter->advance_throw();
+                                }
                                 spawn_combat_spark(side, CombatEffect::throw_tech, impact);
                                 hud_stats[side].notice = L"Throw Tech";
                                 hud_stats[side].notice_ticks = 45;
@@ -2838,10 +4711,12 @@ struct Menu {
                             }
                             attacker.throw_phase = Phase::capture;
                             attacker.throw_tick = 0;
+                            if (air) attacker.jump_velocity = 0;
                             defender.throw_phase = Phase::grabbed;
+                            defender.aerial_throw = air;
                             defender.throw_facing_right = !attacker.throw_facing_right;
                             defender.active_normal = defender.queued_followup = -1;
-                            defender.movement_sprite = 828;
+                            defender.movement_sprite = skullgirls::throw_victim_pose(1);
                             spawn_combat_spark(side, CombatEffect::grab, impact);
                             break;
                         }
@@ -2849,16 +4724,42 @@ struct Menu {
                 }
             }
             if (defender.throw_phase != Phase::grabbed) continue;
-            if (attacker.throw_phase == Phase::capture) {
+            if (attacker.throw_phase == Phase::capture && (air || attacker.movement_sprite != 417)) {
+                if (air) {
+                    const auto pose = attacker.movement_sprite;
+                    defender.movement_sprite = skullgirls::air_throw_victim_pose(pose);
+                    defender.throw_facing_right = pose >= 446 && pose <= 453 ?
+                        attacker.throw_facing_right : !attacker.throw_facing_right;
+                    // Move 133 advances the target offsets at each pose from 445 through 451.
+                    const auto tick = attacker.throw_tick;
+                    const int updates = (tick >= 19) + (tick >= 23) + (tick >= 27) +
+                        (tick >= 31) + (tick >= 35) + (tick >= 39) + (tick >= 45);
+                    const float offset_x = -8.0f / 9.0f * updates;
+                    const float offset_y = 28.0f * updates - 1.875f * updates * (updates - 1) * 0.5f;
+                    defender.practice_x = std::clamp(attacker.practice_x + offset_x * forward, left, right);
+                    defender.jump_height = std::max(0.0f, attacker.jump_height - offset_y);
+                    defender.jump_velocity = 0;
+                    continue;
+                }
+                // Move 122 selects Throw_Stun pose 4 once the victim is enveloped.
+                defender.movement_sprite = skullgirls::throw_victim_pose(
+                    attacker.movement_sprite >= 411 ? 4 : 1);
                 // Target offsets written at frames 0, 4, 7 and 10 of move 122.
                 const unsigned tick = attacker.throw_tick;
-                const float separation = tick <= 17 ? 242.0f : tick <= 22 ? 170.0f : tick <= 27 ? 99.0f : 0.0f;
+                const float separation = tick <= 15 ? 242.0f : tick <= 18 ? 170.0f : tick <= 21 ? 99.0f : 0.0f;
                 defender.practice_x = std::clamp(attacker.practice_x + separation * forward, left, right);
             } else {
                 const skullgirls::NormalHit release{0, 0, 0, 3};
-                // Move 122 sets +8 horizontal and -26 vertical at release.
-                defender.take_hit(release, !attacker.throw_facing_right, -1,
-                    {skullgirls::HeavyReaction::knockback, 8, 26});
+                if (defender.aerial_throw) {
+                    defender.take_hit(release, !attacker.throw_facing_right, -1,
+                        {skullgirls::HeavyReaction::back_knockdown, 25, 15});
+                } else {
+                    // Moves 122/123 release behind the current facing with X = -26, Y = +8.
+                    defender.practice_x = std::clamp(attacker.practice_x - 140.0f * forward, left, right);
+                    defender.jump_height = attacker.jump_height + 75.0f;
+                    defender.take_hit(release, attacker.throw_facing_right, -1,
+                        {skullgirls::HeavyReaction::knockback, 26, 8});
+                }
             }
         }
     }
@@ -2870,7 +4771,29 @@ struct Menu {
     void paint_practice_hud(Gdiplus::Graphics& dc) const {
         if (!hud_atlas[0].bitmap) return;
         const auto tile = [&](unsigned page, int sx, int sy, int sr, int sb, Gdiplus::RectF bounds) {
-            dc.DrawImage(hud_atlas[page].pixels(), bounds, sx, sy, sr - sx, sb - sy, Gdiplus::UnitPixel);
+            const auto& atlas = hud_atlas[page];
+            const std::array<int, 5> key{static_cast<int>(page), sx, sy, sr, sb};
+            const auto [entry, inserted] = hud_tiles.try_emplace(key);
+            // Give bilinear sampling the neighboring texels from the original atlas.
+            constexpr int padding = 2;
+            if (inserted && sx >= padding && sy >= padding &&
+                sr + padding <= atlas.width && sb + padding <= atlas.height) {
+                DIBSECTION section{};
+                if (GetObjectW(atlas.bitmap, sizeof(section), &section) && section.dsBm.bmBits) {
+                    const int stride = section.dsBm.bmWidthBytes;
+                    auto* pixels = static_cast<BYTE*>(section.dsBm.bmBits)
+                        + (sy - padding) * stride + (sx - padding) * 4;
+                    auto image = std::make_unique<Gdiplus::Bitmap>(sr - sx + padding * 2, sb - sy + padding * 2,
+                        stride, PixelFormat32bppPARGB, pixels);
+                    if (image->GetLastStatus() == Gdiplus::Ok)
+                        entry->second = std::move(image);
+                }
+            }
+            if (entry->second) {
+                dc.DrawImage(entry->second.get(), bounds, padding, padding, sr - sx, sb - sy, Gdiplus::UnitPixel);
+            } else {
+                dc.DrawImage(atlas.pixels(), bounds, sx, sy, sr - sx, sb - sy, Gdiplus::UnitPixel);
+            }
         };
         const auto state = dc.Save();
         dc.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
@@ -2881,42 +4804,83 @@ struct Menu {
                 dc.TranslateTransform(1280, 0);
                 dc.ScaleTransform(-1, 1);
             }
-            tile(0, 592, 579, 1165, 663, {165, 52, 390, 56});
-            tile(0, 592, 752, 1435, 1006, {-1, 13, 562, 169});
-            tile(0, 1441, 703, 1993, 747, {163, 51, 389, 32});
-            Gdiplus::SolidBrush empty_bar(Gdiplus::Color(255, 22, 16, 15));
-            dc.FillRectangle(&empty_bar, 163, 84, 389, 20);
+            // InGame.gbs P1/P2_F1–F3 health objects and the two roster-size covers.
+            const auto& team = practice_teams[side];
             const auto& stats = hud_stats[side];
-            const auto bar_width = [](float life) { return 389 * std::clamp(life / 15500.0f, 0.0f, 1.0f); };
-            const float health = bar_width(stats.displayed_life);
-            const float trail = bar_width(stats.damage_trail);
-            if (trail > health) {
-                const auto damage_clip = dc.Save();
-                dc.SetClip(Gdiplus::RectF(163 + health, 84, trail - health, 20));
-                tile(0, 1240, 667, 1803, 697, {163, 84, 389, 20});
-                dc.Restore(damage_clip);
+            const auto count = fighters[side].size();
+            tile(0, 592, 579, 1165, 663, {165, 52, 390, 56});
+            tile(0, 592, 752, 1435, 1006, {4, 13, 562, 169});
+            const auto draw_life = [&](const PracticeLife& health, Gdiplus::RectF bounds,
+                                       int fill_top, int fill_right, int fill_height, int damage_top) {
+                const auto width = [&](float value) {
+                    return bounds.Width * std::clamp(value / 15500.0f, 0.0f, 1.0f);
+                };
+                const float fill = width(health.displayed_life);
+                const float trail = width(health.damage_trail);
+                const auto layer = [&](int top, float visible) {
+                    if (visible <= 0) return;
+                    const auto clip = dc.Save();
+                    dc.SetClip(Gdiplus::RectF(bounds.X, bounds.Y, visible, bounds.Height),
+                               Gdiplus::CombineModeIntersect);
+                    tile(1, 825, top, fill_right, top + fill_height, bounds);
+                    dc.Restore(clip);
+                };
+                layer(damage_top, trail);
+                layer(fill_top, fill);
+            };
+            draw_life(stats, {175, 84, 375, 20}, 1559, 1388, 30, 1643);
+            if (count == 1)
+                tile(0, 1441, 703, 1993, 747, {167, 54, 368, 29});
+            else if (count == 2)
+                tile(0, 1439, 752, 1969, 776, {166, 53, 353, 16});
+
+            struct EyePortrait { std::string_view fighter; unsigned page; int x, y; };
+            static constexpr EyePortrait eyes[] = {
+                {"cerebella", 0, 697, 467}, {"filia", 1, 689, 66}, {"peacock", 1, 689, 86},
+                {"parasoul", 1, 781, 66}, {"msfortune", 1, 781, 86}, {"painwheel", 1, 938, 90},
+                {"double", 1, 1030, 90}, {"marie", 1, 1122, 90}, {"valentine", 1, 1214, 90},
+                {"squigly", 0, 697, 447}, {"bigband", 1, 1523, 89}, {"fukua", 1, 1689, 89},
+                {"eliza", 1, 1855, 89}, {"beowulf", 1, 1947, 89}, {"robofortune", 1, 554, 997},
+                {"annie", 1, 553, 1016}, {"umbrella", 1, 205, 1200},
+                {"blackdahlia", 1, 205, 1218}, {"bossmarie", 1, 659, 1357},
+            };
+            unsigned reserve_row = 0;
+            for (std::size_t slot = 0; slot < count; ++slot) {
+                if (slot == team.active_slot) continue;
+                const bool middle = reserve_row++ == 0;
+                draw_life(team.health[slot], {middle ? 250.0f : 234.0f, middle ? 69.0f : 55.0f, 286, 14},
+                    middle ? 1593 : 1677, 1254, 21, 1618);
+                tile(0, 651, 447, 693, 485, {middle ? 233.0f : 220.0f, middle ? 62.0f : 47.0f, 28, 25});
+                const auto eye = std::find_if(std::begin(eyes), std::end(eyes), [&](const auto& entry) {
+                    return entry.fighter == roster[fighters[side][slot]];
+                });
+                if (eye != std::end(eyes))
+                    tile(eye->page, eye->x, eye->y, eye->x + 88, eye->y + 16,
+                         {middle ? 164.0f : 157.0f, middle ? 70.5f : 57.0f, 88 * 2.0f / 3, 16 * 2.0f / 3});
             }
-            const auto fill = dc.Save();
-            dc.SetClip(Gdiplus::RectF(163, 84, health, 20));
-            if (!side) tile(1, 825, 1559, 1388, 1589, {163, 84, 389, 20});
-            else tile(0, 1169, 613, 1732, 643, {163, 84, 389, 20});
-            dc.Restore(fill);
+            if (count > 1) {
+                const bool available = !team.assist && !team.tag && !team.departing &&
+                    !team.assist_cooldown && next_practice_reserve(side).has_value();
+                if (available) tile(0, 789, 526, 851, 559, {205.59f, 105, 41, 22});
+                else tile(1, 873, 66, 934, 99, {205.59f, 105, 41, 22});
+            }
             const Gdiplus::RectF arc(4, 9, 157, 163);
             Gdiplus::Pen meter_edge(Gdiplus::Color(255, 64, 30, 16), 13);
             Gdiplus::Pen meter(Gdiplus::Color(255, 230, 89, 17), 9);
             Gdiplus::Pen glint(Gdiplus::Color(255, 255, 206, 71), 3);
             for (auto* pen : {&meter_edge, &meter, &glint}) dc.DrawArc(pen, arc, 15, 195);
             tile(0, 88, 864, 325, 1092, {7, 4, 158, 152});
-            if (hud_portraits[side]) {
+            const auto& portrait = hud_portraits[side][practice_teams[side].active_slot];
+            if (portrait) {
                 const auto portrait_clip = dc.Save();
                 dc.SetClip(Gdiplus::RectF(20, 0, 143, 118));
-                dc.DrawImage(hud_portraits[side].get(), Gdiplus::RectF(-6, -162, 202, 288));
+                dc.DrawImage(portrait.get(), Gdiplus::RectF(-6, -162, 202, 288));
                 dc.Restore(portrait_clip);
             }
             tile(0, 1507, 436, 1583, 512, {19, 18, 48, 48});
             tile(0, 88, 1370, 362, 1415, {29, 124, 118, 20});
             dc.Restore(mirrored);
-            const auto stock = training_value("OPT_STR_METERLEVEL", 5);
+            const auto stock = practice_players[side].tension;
             constexpr int digits[][2] = {{1341, 300}, {538, 1043}, {674, 1043},
                 {2, 1247}, {2, 1383}, {2, 1519}};
             const auto* digit = digits[stock];
@@ -2930,16 +4894,8 @@ struct Menu {
                           Gdiplus::StringAlignmentCenter);
 
             const float stats_x = side ? 722.0f : 199.0f;
-            if (training_value("OPT_STR_HITSTUNBAR") == 1) {
-                Gdiplus::SolidBrush track(Gdiplus::Color(205, 18, 17, 24));
-                Gdiplus::SolidBrush meter(Gdiplus::Color(245, 179, 124, 211));
-                dc.FillRectangle(&track, stats_x, 121.0f, 330.0f, 6.0f);
-                const auto& fighter = practice_players[side];
-                if (fighter.hurt_group >= 0)
-                    dc.FillRectangle(&meter, stats_x, 121.0f, std::min(fighter.hurt_hold, 55u) * 6.0f, 6.0f);
-            }
             const auto attack_data = training_value("OPT_STR_ATTACK_DATA", 1);
-            if (!attack_data) continue;
+            if (!attack_data || practice_presentation.phase != PracticePresentation::Phase::none) continue;
             Gdiplus::SolidBrush backing(Gdiplus::Color(148, 11, 12, 14));
             Gdiplus::SolidBrush line(Gdiplus::Color(210, 217, 208, 179));
             dc.FillRectangle(&backing, stats_x, 130.0f, 368.0f, 100.0f);
@@ -2951,10 +4907,16 @@ struct Menu {
             if (attack_data == 2)
                 hits += L"     Hitstun: " + std::to_wstring(practice_players[side].hurt_group >= 0 ?
                     practice_players[side].hurt_hold : 0u);
-            draw_text(dc, life.c_str(), {stats_x + 8, 132, 352, 25}, 18, Gdiplus::StringAlignmentNear);
-            draw_text(dc, L"Damage Multiplier:  1.00", {stats_x + 8, 156, 352, 25}, 18, Gdiplus::StringAlignmentNear);
-            draw_text(dc, damage.c_str(), {stats_x + 8, 180, 352, 25}, 18, Gdiplus::StringAlignmentNear);
-            draw_text(dc, hits.c_str(), {stats_x + 8, 204, 352, 25}, 18, Gdiplus::StringAlignmentNear);
+            if (!hud_stats_font)
+                hud_stats_font = std::make_unique<Gdiplus::Font>(L"Arial", 18.0f, Gdiplus::FontStyleRegular,
+                                                               Gdiplus::UnitPixel);
+            const auto draw_stat = [&](const wchar_t* text, float y) {
+                draw_text(dc, text, {stats_x + 8, y, 352, 25}, *hud_stats_font, Gdiplus::StringAlignmentNear);
+            };
+            draw_stat(life.c_str(), 132);
+            draw_stat(L"Damage Multiplier:  1.00", 156);
+            draw_stat(damage.c_str(), 180);
+            draw_stat(hits.c_str(), 204);
         }
         tile(0, 88, 1096, 394, 1366, {538, -18, 204, 180});
         for (const float x : {597.0f, 625.0f}) {
@@ -3054,6 +5016,33 @@ struct Menu {
                 draw(fighter.sprite(), fighter.practice_x, fighter.jump_height, facing, 0);
             for (const auto& spike : fighter.ringlet_spikes)
                 if (spike.can_hit()) draw(spike.sprite(), spike.x, 0, spike.facing_right, 0);
+            if (const auto& projectile = fighter.tricobezoar; projectile && projectile->can_hit())
+                draw(projectile->sprite(), projectile->x, projectile->y, projectile->facing_right, 0);
+        }
+    }
+
+    void paint_recovery_bars(Gdiplus::Graphics& dc, float camera, float floor) const {
+        if (training_value("OPT_STR_HITSTUNBAR") != 1) return;
+        for (const auto& fighter : practice_players) {
+            const unsigned ticks = fighter.hurt_group >= 0 ? fighter.hurt_hold : fighter.blockstun;
+            if (!ticks) continue;
+            const auto countdown_color = [](unsigned remaining) {
+                return remaining >= 10 ? Gdiplus::Color(34, 248, 30) :
+                    remaining >= 5 ? Gdiplus::Color(255, 164, 22) : Gdiplus::Color(231, 30, 30);
+            };
+            const float x = fighter.practice_x - camera - 34;
+            const float y = floor - fighter.jump_height + 10;
+            const auto draw_bar = [&](unsigned remaining, float top, Gdiplus::Color color) {
+                constexpr float segment = 15.0f;
+                const auto count = std::min(remaining, 55u);
+                Gdiplus::SolidBrush border(Gdiplus::Color(210, 26, 25, 26));
+                Gdiplus::SolidBrush fill(color);
+                dc.FillRectangle(&border, x - 1, top - 1, segment * count + 1, 11.0f);
+                for (unsigned i = 0; i < count; ++i)
+                    dc.FillRectangle(&fill, x + segment * i, top, segment - 1, 9.0f);
+            };
+            draw_bar(ticks, y, fighter.hit_stop ? Gdiplus::Color(40, 252, 255) : countdown_color(ticks));
+            if (fighter.hit_stop) draw_bar(fighter.hit_stop, y + 12, countdown_color(fighter.hit_stop));
         }
     }
 
@@ -3061,7 +5050,7 @@ struct Menu {
         const float view_width = 1280.0f + 320.0f * practice_camera_zoom;
         const float view_height = 720.0f + 180.0f * practice_camera_zoom;
         const float camera = std::clamp(practice_camera_center - view_width * 0.5f,
-                                        0.0f, practice_width - view_width);
+                                        0.0f, std::max(0.0f, practice_width - view_width));
         if (practice_scene)
             practice_scene->draw(dc, camera + view_width * 0.5f, view_width, view_height,
                                  static_cast<float>(practice_camera_bottom), practice_stage_tick);
@@ -3081,8 +5070,9 @@ struct Menu {
                 dc.DrawLine(&pen, 0.0f, y, view_width, y);
         }
         const auto draw_practice_idle = [&](int side, float x, bool mirror, bool shadow) {
-            const auto fighter = fighters[side].front();
-            const auto palette = locked_colors[side].front();
+            const auto slot = practice_teams[side].active_slot;
+            const auto fighter = fighters[side][slot];
+            const auto palette = locked_colors[side][slot];
             if (std::string_view(roster[fighter]) != "filia") {
                 draw_idle(dc, fighter, palette, x, floor, mirror, shadow);
                 return;
@@ -3091,8 +5081,42 @@ struct Menu {
         };
         const auto draw_players = [&](bool shadow) {
             for (int side : {1, 0}) {
+                const auto draw_travel = [&](const PracticeTeamActor& actor) {
+                    const auto& travel = actor.travel;
+                    if (!travel.pose) return;
+                    draw_practice_frame(dc, side, travel.pose, travel.x - camera,
+                        shadow ? floor : floor - travel.height, !travel.facing_right, shadow, actor.slot);
+                };
+                const auto& team = practice_teams[side];
+                if (team.departing) draw_travel(*team.departing);
+                if (team.tag) {
+                    draw_travel(team.tag->incoming);
+                    if (team.tag->forced_exit)
+                        draw_travel({team.active_slot, team.tag->incoming.home_on_left, *team.tag->forced_exit});
+                }
+                if (const auto& assist = team.assist) {
+                    if (assist->phase == PracticeAssist::Phase::acting) {
+                        const auto& fighter = assist->fighter;
+                        draw_practice_frame(dc, side, fighter.sprite(), fighter.practice_x - camera,
+                            shadow ? floor : floor - fighter.jump_height,
+                            fighter.mirror(practice_facing_right(side)), shadow, assist->actor.slot);
+                    } else {
+                        draw_travel(assist->actor);
+                    }
+                }
+                if (practice_point_snapped(side)) continue;
                 const auto& player = practice_players[side];
                 const float x = player.practice_x - camera;
+                const auto& actor = practice_presentation.actors[side];
+                if (actor.pose) {
+                    const bool turning = practice_presentation.phase == PracticePresentation::Phase::results &&
+                        actor.pose >= 50 && actor.pose <= 57;
+                    draw_practice_frame(dc, side, actor.pose, x, floor,
+                        turning ? !actor.starts_facing_right : !actor.facing_right, shadow);
+                    if (!shadow && actor.effect_pose)
+                        draw_practice_frame(dc, side, actor.effect_pose, x, floor, !actor.facing_right, false);
+                    continue;
+                }
                 const bool mirror = player.mirror(practice_facing_right(side));
                 if (player.movement_sprite) {
                     draw_practice_frame(dc, side, player.movement_sprite, x,
@@ -3105,9 +5129,19 @@ struct Menu {
         draw_players(true);
         draw_players(false);
         for (int side : {1, 0}) {
+            if (const auto& assist = practice_teams[side].assist) {
+                for (const auto& spike : assist->fighter.ringlet_spikes) {
+                    if (spike.sprite()) draw_practice_frame(dc, side, spike.sprite(), spike.x - camera,
+                        floor, !spike.facing_right, false, spike.palette_slot);
+                }
+            }
+            if (const auto& projectile = practice_players[side].tricobezoar)
+                draw_practice_frame(dc, side, projectile->sprite(), projectile->x - camera,
+                    floor - projectile->y, !projectile->facing_right, false, projectile->palette_slot);
             for (const auto& spike : practice_players[side].ringlet_spikes) {
                 if (spike.sprite())
-                    draw_practice_frame(dc, side, spike.sprite(), spike.x - camera, floor, !spike.facing_right, false);
+                    draw_practice_frame(dc, side, spike.sprite(), spike.x - camera,
+                        floor, !spike.facing_right, false, spike.palette_slot);
             }
         }
         for (const auto& stats : hud_stats) {
@@ -3115,12 +5149,17 @@ struct Menu {
                 combat_effects[static_cast<std::size_t>(spark.effect)].draw_at(dc, spark.age,
                     spark.position.X - camera, floor - spark.position.Y, spark.scale);
         }
-        paint_practice_hitboxes(dc, camera, floor);
+        if (practice_presentation.phase == PracticePresentation::Phase::none) {
+            paint_practice_hitboxes(dc, camera, floor);
+            paint_recovery_bars(dc, camera, floor);
+        }
         dc.Restore(world);
         paint_practice_hud(dc);
         for (std::size_t side = 0; side < hud_stats.size(); ++side) {
             const auto& stats = hud_stats[side];
-            if (stats.notice_ticks && stats.notice)
+            if (practice_players[side].burst_available && practice_players[side].hurt_group >= 0)
+                draw_text(dc, L"Burst ready", {side * 640.0f, 239, 640, 36}, 24, Gdiplus::StringAlignmentCenter);
+            else if (stats.notice_ticks && stats.notice)
                 draw_text(dc, stats.notice, {side * 640.0f, 239, 640, 36}, 24, Gdiplus::StringAlignmentCenter);
         }
         if (dummy_input_override()) {
@@ -3131,9 +5170,165 @@ struct Menu {
                 std::to_wstring(slot + 1);
             draw_text(dc, status.c_str(), {320, 195, 640, 32}, 20, Gdiplus::StringAlignmentCenter);
         }
-        if (training_value("OPT_STR_DEATHALLOWED") && (!hud_stats[0].life || !hud_stats[1].life))
-            draw_text(dc, L"K.O.   R to reset", {320, 304, 640, 75}, 42, Gdiplus::StringAlignmentCenter);
+        using Phase = PracticePresentation::Phase;
+        if (practice_presentation.phase == Phase::knockout) {
+            draw_text(dc, L"K.O.", {320, 304, 640, 75}, 42, Gdiplus::StringAlignmentCenter);
+        } else if (practice_presentation.phase == Phase::results) {
+            const auto& defeated = practice_presentation.defeated;
+            const wchar_t* result = defeated[0] && defeated[1] ? L"Draw" :
+                defeated[0] ? L"Player 2 wins" : L"Player 1 wins";
+            draw_text(dc, result, {320, 159, 640, 60}, 42, Gdiplus::StringAlignmentCenter);
+            draw_text(dc, L"R to reset", {320, 219, 640, 35}, 22, Gdiplus::StringAlignmentCenter);
+        }
         if (practice_paused) paint_practice_pause(dc);
+    }
+
+    void load_command_lists(skullgirls::SpriteArchive& core, skullgirls::SpriteArchive& ui) {
+        const auto read = [](skullgirls::SpriteArchive& archive, const std::string& path) {
+            const auto bytes = archive.read(path);
+            return std::istringstream(std::string(bytes.begin(), bytes.end()));
+        };
+        const auto fold = [](std::string key) {
+            for (auto& ch : key) if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
+            return key;
+        };
+        std::map<std::string, std::wstring> labels;
+        auto localization = read(core, "core/localization/en_loc.json");
+        // The installed localization stores one string entry per line.
+        for (std::string line; std::getline(localization, line);) {
+            std::istringstream entry(line);
+            std::string key, value;
+            char separator;
+            entry >> std::ws;
+            if (entry.peek() != '"' || !(entry >> std::quoted(key) >> separator >> std::ws) ||
+                separator != ':' || entry.peek() != '"') continue;
+            entry.get();
+            for (char ch; entry.get(ch) && ch != '"';) {
+                if (ch == '\\' && entry.get(ch)) {
+                    if (ch == 'r' || ch == 'n' || ch == 't') ch = ' ';
+                }
+                value += ch;
+            }
+            const int length = MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0);
+            std::wstring wide(length, L'\0');
+            if (length) MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), wide.data(), length);
+            labels.emplace(fold(key), std::move(wide));
+        }
+        const auto label = [&](const std::string& key) {
+            const auto match = labels.find(fold(key));
+            return match != labels.end() ? match->second : std::wstring(key.begin(), key.end());
+        };
+        const auto clean = [](std::string line) {
+            if (const auto comment = line.find('#'); comment != std::string::npos) line.erase(comment);
+            line.erase(line.find_last_not_of(" \t\r") + 1);
+            return line;
+        };
+        const auto input_text = [](std::wstring source) {
+            static const std::map<std::wstring, std::wstring> glyphs{
+                {L"qcf", L"↓ ↘ →"}, {L"qcb", L"↓ ↙ ←"}, {L"dp", L"→ ↓ ↘"}, {L"rdp", L"← ↓ ↙"},
+                {L"f", L"→"}, {L"b", L"←"}, {L"d", L"↓"}, {L"df", L"↘"}, {L"u", L"↑"},
+                {L"ub", L"↖"}, {L"uf", L"↗"}, {L"360", L"360°"}, {L"seq", L", "}, {L"seqs", L", "},
+                {L"ap", L"Punch"}, {L"ak", L"Kick"}, {L"pp", L"2 Punches"}, {L"kk", L"2 Kicks"},
+                {L"plus", L" + "},
+            };
+            std::wstring result;
+            for (std::size_t i = 0; i < source.size();) {
+                const auto end = source[i] == L'{' ? source.find(L'}', i + 1) : std::wstring::npos;
+                if (end == std::wstring::npos) {
+                    result += source[i++];
+                    continue;
+                }
+                const auto token = source.substr(i + 1, end - i - 1);
+                const auto glyph = glyphs.find(token);
+                if (glyph != glyphs.end()) result += glyph->second;
+                else {
+                    for (std::size_t j = 0; j < token.size(); ++j) {
+                        if (j && j % 2 == 0) result += L" + ";
+                        result += static_cast<wchar_t>(std::towupper(token[j]));
+                    }
+                }
+                i = end + 1;
+            }
+            return result;
+        };
+        auto index = read(ui, "ui/config/Options/movelists.ini");
+        for (std::string line; std::getline(index, line);) {
+            line = clean(std::move(line));
+            if (line.rfind("Text: ", 0) != 0) continue;
+            const auto key = line.substr(6);
+            CommandList list{fold(key), label(key), {}};
+            auto config = read(ui, "ui/config/Options/movelist_" + key + ".ini");
+            for (std::string field, name; std::getline(config, field);) {
+                field = clean(std::move(field));
+                if (field.rfind("Text: ", 0) == 0) name = field.substr(6);
+                if (field.rfind("Description: ", 0) == 0 && !name.empty()) {
+                    list.moves.push_back({label(name), input_text(label(field.substr(13)))});
+                    name.clear();
+                }
+            }
+            command_lists.push_back(std::move(list));
+        }
+    }
+
+    bool command_input(WPARAM key, bool accept, bool back) {
+        if (back) {
+            if (command_page == CommandPage::moves)
+                command_page = command_menu_cursor == 2 ? CommandPage::characters : CommandPage::menu;
+            else if (command_page == CommandPage::characters) command_page = CommandPage::menu;
+            else pause_page.reset();
+            return true;
+        }
+        if (command_lists.empty()) return false;
+        auto& cursor = command_page == CommandPage::menu ? command_menu_cursor :
+            command_page == CommandPage::characters ? command_character_cursor : command_move_cursor;
+        const auto count = command_page == CommandPage::menu ? 3u :
+            command_page == CommandPage::characters ? command_lists.size() : command_lists[command_list].moves.size();
+        if (count && (key == VK_UP || key == VK_DOWN)) {
+            cursor = (cursor + (key == VK_UP ? count - 1 : 1)) % count;
+            return true;
+        }
+        if (!accept || command_page == CommandPage::moves) return false;
+        if (command_page == CommandPage::menu && cursor == 2) {
+            command_page = CommandPage::characters;
+            return true;
+        }
+        const std::string_view wanted = command_page == CommandPage::characters ? std::string_view(command_lists[cursor].key) :
+            cursor == 1 ? "universal" : roster[fighters[0].front()];
+        const auto list = std::find_if(command_lists.begin(), command_lists.end(),
+            [&](const CommandList& candidate) { return candidate.key == wanted; });
+        if (list == command_lists.end()) return false;
+        command_list = list - command_lists.begin();
+        command_move_cursor = 0;
+        command_page = CommandPage::moves;
+        return true;
+    }
+
+    void paint_command_list(Gdiplus::Graphics& dc) const {
+        constexpr const wchar_t* choices[] = {L"Current Character", L"Universal Commands", L"All Characters..."};
+        const bool moves = command_page == CommandPage::moves;
+        const bool characters = command_page == CommandPage::characters;
+        const auto& list = command_lists[command_list];
+        const auto* title = moves ? list.title.c_str() : characters ? L"All Characters" : L"Command Lists";
+        draw_text(dc, title, {393, 213, 494, 42}, 30, Gdiplus::StringAlignmentCenter);
+        const auto count = moves ? list.moves.size() : characters ? command_lists.size() : std::size(choices);
+        const auto cursor = moves ? command_move_cursor : characters ? command_character_cursor : command_menu_cursor;
+        const std::size_t visible = moves ? 5 : 7;
+        const auto first = cursor >= visible ? cursor - visible + 1 : 0;
+        const float height = moves ? 54.0f : 39.0f;
+        Gdiplus::Pen outline(Gdiplus::Color(255, 164, 20, 18), 2);
+        for (auto i = first; i < std::min(count, first + visible); ++i) {
+            const float y = 258.0f + height * float(i - first);
+            if (i == cursor) dc.DrawRectangle(&outline, 388.0f, y, 504.0f, height - 3);
+            if (moves) {
+                draw_text(dc, list.moves[i].name.c_str(), {396, y + 1, 488, 24}, 20, Gdiplus::StringAlignmentNear);
+                draw_text(dc, list.moves[i].input.c_str(), {396, y + 23, 488, 29}, 15, Gdiplus::StringAlignmentNear);
+            } else {
+                const auto* label = characters ? command_lists[i].title.c_str() : choices[i];
+                draw_text(dc, label, {396, y + 2, 488, 34}, 24, Gdiplus::StringAlignmentNear);
+            }
+        }
+        const auto* hint = moves ? L"↑ ↓  Scroll     Esc  Back" : L"↑ ↓  Select     Enter  Open     Esc  Back";
+        draw_text(dc, hint, {390, 541, 500, 31}, 19, Gdiplus::StringAlignmentCenter);
     }
 
     void paint_practice_pause(Gdiplus::Graphics& dc) const {
@@ -3148,6 +5343,10 @@ struct Menu {
         dc.ScaleTransform(-1, 1);
         color_wing.draw(dc, 466, 200, 45, 38);
         dc.Restore(wing_state);
+        if (pause_page == PauseOption::commands && !command_lists.empty()) {
+            paint_command_list(dc);
+            return;
+        }
         const auto* heading = pause_page ? pause_options[static_cast<std::size_t>(*pause_page)] : L"PLAYER 1 PAUSE";
         draw_text(dc, heading, {512, 213, 256, 42}, 30, Gdiplus::StringAlignmentCenter);
         if (!pause_page || *pause_page == PauseOption::options) {
@@ -3179,25 +5378,23 @@ struct Menu {
                     draw_text(dc, value.c_str(), {665, y + 2, 221, 34}, 23, Gdiplus::StringAlignmentCenter);
                 }
             }
-            draw_text(dc, L"↑ ↓  Select     ← →  Change     X / S  Back",
+            draw_text(dc, L"↑ ↓  Select     ← →  Change     Esc  Back",
                 {390, 541, 500, 31}, 19, Gdiplus::StringAlignmentCenter);
             return;
         }
         const auto* details = *pause_page == PauseOption::help ?
             L"Player 1   Arrows, A S D, Z X C\nPlayer 2   I J K L, V B N, F G H\nR   Reset both fighters\nF6 / F7   Save / load state\nF8 / F9   Record / play dummy input" :
-            *pause_page == PauseOption::commands ?
-            L"Filia\nUpdo   → ↓ ↘ + Punch\nRinglet Spike   ↓ ↘ → + Punch\nHairball   ↓ ↙ ← + Kick" :
             L"Unavailable in this preview.";
         draw_text(dc, details, {394, 266, 492, 180}, 25, Gdiplus::StringAlignmentNear);
-        draw_text(dc, L"Enter  Back", {394, 520, 492, 38}, 22, Gdiplus::StringAlignmentNear);
+        draw_text(dc, L"Esc  Back", {394, 520, 492, 38}, 22, Gdiplus::StringAlignmentNear);
     }
 
     bool showing_stage_select() const {
         return training == TrainingView::stage_select || training == TrainingView::stage_confirmed;
     }
 
-    void load_stages(const std::filesystem::path& directory) {
-        const auto config = skullgirls::read_sprite_asset(directory / "core.gfs", "core/stages.ini");
+    void load_stages(skullgirls::SpriteArchive& core, skullgirls::SpriteArchive& ui_win) {
+        const auto config = core.read("core/stages.ini");
         std::istringstream stream(std::string(config.begin(), config.end()));
         for (std::string line; std::getline(stream, line);) {
             line.erase(std::min(line.size(), line.find('#')));
@@ -3212,8 +5409,7 @@ struct Menu {
             }
             if (beta_only) continue;
             auto preview = std::make_unique<Texture>();
-            preview->load(skullgirls::read_sprite_asset(directory / "ui-win.gfs",
-                "ui/Win/Textures/charselect/stages/" + picture + ".dds"));
+            preview->load(ui_win.read("ui/Win/Textures/charselect/stages/" + picture + ".dds"));
             auto label = id;
             if (!label.empty() && label.front() == '_') label.erase(0, 1);
             std::replace(label.begin(), label.end(), '_', ' ');
@@ -3306,9 +5502,9 @@ struct Menu {
         draw_fighter_frame(dc, fighter, palette, frames[index], index, x, y, mirror, shadow);
     }
 
+    template <typename ColorAt>
     std::unique_ptr<Gdiplus::Bitmap> make_fighter_bitmap(const skullgirls::SelectFrame& frame,
-                                                        int fighter, std::size_t palette) const {
-        const auto rgba = skullgirls::colorize_sprite_with_palette(frame.pixels, palettes[fighter][palette].colors);
+                                                        ColorAt color_at) const {
         auto bitmap = std::make_unique<Gdiplus::Bitmap>(frame.width, frame.height, PixelFormat32bppARGB);
         Gdiplus::BitmapData data{};
         Gdiplus::Rect bounds(0, 0, frame.width, frame.height);
@@ -3319,50 +5515,66 @@ struct Menu {
                 static_cast<BYTE*>(data.Scan0) + static_cast<std::ptrdiff_t>(row) * data.Stride);
             for (unsigned col = 0; col < frame.width; ++col) {
                 const auto pixel = row * frame.width + col;
-                const auto* color = rgba.data() + pixel * 4;
-                target[col] = frame.pixels[pixel * 3] ?
-                    (unsigned(color[3]) << 24) | (unsigned(color[0]) << 16) |
-                    (unsigned(color[1]) << 8) | color[2] : 0;
+                target[col] = color_at(pixel);
             }
         }
         bitmap->UnlockBits(&data);
         return bitmap;
     }
 
-    using PracticeBitmaps = std::vector<std::unique_ptr<Gdiplus::Bitmap>>;
-    std::array<PracticeBitmaps, 2> practice_bitmaps;
-    std::array<std::size_t, 2> practice_bitmap_side{};
+    std::unique_ptr<Gdiplus::Bitmap> make_fighter_bitmap(const skullgirls::SelectFrame& frame,
+                                                        int fighter, std::size_t palette) const {
+        const auto rgba = skullgirls::colorize_sprite_with_palette(frame.pixels, palettes[fighter][palette].colors);
+        return make_fighter_bitmap(frame, [&](std::size_t pixel) {
+            if (!frame.pixels[pixel * 3]) return 0u;
+            const auto* color = rgba.data() + pixel * 4;
+            return (unsigned(color[3]) << 24) | (unsigned(color[0]) << 16) |
+                   (unsigned(color[1]) << 8) | color[2];
+        });
+    }
+
+    decltype(fighters) staged_fighters;
+    decltype(locked_colors) staged_colors;
+    std::map<std::size_t, skullgirls::SpritePaletteLookup> practice_palette_lookups;
+    struct CachedPracticeBitmap {
+        std::unique_ptr<Gdiplus::Bitmap> bitmap;
+        std::uint64_t used = 0;
+    };
+    mutable std::map<std::pair<std::size_t, unsigned>, CachedPracticeBitmap> practice_palette_cache;
+    mutable std::uint64_t practice_bitmap_use = 0;
+
+    std::unique_ptr<Gdiplus::Bitmap> make_practice_bitmap(unsigned sprite,
+                                                          const skullgirls::SpritePaletteLookup& lookup) const {
+        const auto& frame = movement_frames[sprite];
+        if (!frame.width || !frame.height) return {};
+        const auto make_bitmap = [&](const skullgirls::SelectFrame& image) {
+            return make_fighter_bitmap(image, [&](std::size_t pixel) {
+                const auto* texel = image.pixels.data() + pixel * 3;
+                return texel[1] || texel[2] ? lookup.argb(texel[2], texel[1]) : 0u;
+            });
+        };
+        auto bitmap = make_bitmap(frame);
+        if (!bitmap) return {};
+        if (const auto overlay = jab_overlays.find(sprite); overlay != jab_overlays.end()) {
+            auto effect = make_bitmap(overlay->second);
+            if (!effect) return {};
+            Gdiplus::Graphics composite(bitmap.get());
+            if (composite.DrawImage(effect.get(), 0, 0, frame.width, frame.height) != Gdiplus::Ok) return {};
+        }
+        return bitmap;
+    }
 
     void prepare_practice_bitmaps() {
-        decltype(practice_bitmaps) prepared;
-        for (std::size_t side = 0; side < prepared.size(); ++side) {
-            practice_bitmap_side[side] = side;
-            const auto fighter = fighters[side].front();
-            if (std::string_view(roster[fighter]) != "filia") continue;
-            const auto palette = locked_colors[side].front();
-            if (side == 1 && fighter == fighters[0].front() && palette == locked_colors[0].front()) {
-                practice_bitmap_side[side] = 0;
-                continue;
-            }
-            auto& sprites = prepared[side];
-            sprites.resize(movement_frames.size());
-            for (std::size_t i = 0; i < movement_frames.size(); ++i) {
-                const auto& frame = movement_frames[i];
-                if (frame.width && frame.height) {
-                    sprites[i] = make_fighter_bitmap(frame, fighter, palette);
-                    if (!sprites[i]) throw std::runtime_error("Cannot prepare training sprite bitmap");
-                    const auto overlay = jab_overlays.find(static_cast<unsigned>(i));
-                    if (overlay != jab_overlays.end()) {
-                        auto effect = make_fighter_bitmap(overlay->second, fighter, palette);
-                        if (!effect) throw std::runtime_error("Cannot prepare Filia jab overlay");
-                        Gdiplus::Graphics composite(sprites[i].get());
-                        if (composite.DrawImage(effect.get(), 0, 0, frame.width, frame.height) != Gdiplus::Ok)
-                            throw std::runtime_error("Cannot composite Filia jab overlay");
-                    }
-                }
-            }
+        practice_palette_lookups.clear();
+        practice_palette_cache.clear();
+        practice_bitmap_use = 0;
+        for (std::size_t side = 0; side < fighters.size(); ++side)
+        for (std::size_t slot = 0; slot < fighters[side].size(); ++slot) {
+            if (!practice_slot_is_filia(side, slot)) continue;
+            const auto fighter = fighters[side][slot];
+            const auto palette = locked_colors[side][slot];
+            practice_palette_lookups.try_emplace(palette, palettes[fighter][palette].colors);
         }
-        practice_bitmaps = std::move(prepared);
     }
 
     void draw_fighter_frame(Gdiplus::Graphics& dc, int fighter, std::size_t palette,
@@ -3381,9 +5593,26 @@ struct Menu {
     }
 
     void draw_practice_frame(Gdiplus::Graphics& dc, std::size_t side, unsigned sprite,
-                             float x, float y, bool mirror, bool shadow) const {
-        const auto& bitmap = practice_bitmaps[practice_bitmap_side[side]][sprite];
-        if (bitmap) draw_fighter_bitmap(dc, *bitmap, movement_frames[sprite], x, y, mirror, shadow);
+                             float x, float y, bool mirror, bool shadow,
+                             std::optional<std::size_t> slot = {}) const {
+        const auto palette = locked_colors[side][slot.value_or(practice_teams[side].active_slot)];
+        const auto lookup = practice_palette_lookups.find(palette);
+        if (lookup == practice_palette_lookups.end()) return;
+        const auto key = std::pair{palette, sprite};
+        auto cached = practice_palette_cache.find(key);
+        if (cached == practice_palette_cache.end()) {
+            constexpr std::size_t cache_limit = 128;
+            if (practice_palette_cache.size() >= cache_limit) {
+                const auto oldest = std::min_element(practice_palette_cache.begin(), practice_palette_cache.end(),
+                    [](const auto& a, const auto& b) { return a.second.used < b.second.used; });
+                practice_palette_cache.erase(oldest);
+            }
+            auto bitmap = make_practice_bitmap(sprite, lookup->second);
+            if (!bitmap) return;
+            cached = practice_palette_cache.emplace(key, CachedPracticeBitmap{std::move(bitmap)}).first;
+        }
+        cached->second.used = ++practice_bitmap_use;
+        draw_fighter_bitmap(dc, *cached->second.bitmap, movement_frames[sprite], x, y, mirror, shadow);
     }
 
     void draw_fighter_bitmap(Gdiplus::Graphics& dc, Gdiplus::Bitmap& bitmap,
@@ -3640,28 +5869,35 @@ struct Menu {
     bool unavailable = false;
 
     void load(const std::filesystem::path& directory) {
+        skullgirls::SpriteArchive core(directory / "core.gfs");
+        skullgirls::SpriteArchive ui(directory / "ui.gfs");
+        load_command_lists(core, ui);
         game_data = directory;
-        loading_animation.load(directory / "sprites.gfs", "loading_en", "bomb_en");
+        skullgirls::SpriteArchive sprites_archive(directory / "sprites.gfs");
+        loading_animation.load(sprites_archive, "loading_en", "bomb_en");
         constexpr const char* effect_assets[] = {
             "hitspark_omni_l", "hitspark_omni_m", "hitspark_omni_h", "block", "pushblock",
-            "grab", "throwtech2", "hitspark_ground_impact_m",
+            "grab", "throwtech2", "hitspark_ground_impact_m", "hitspark_wall_impact_h", "auto_recovery_effect",
         };
-        for (std::size_t i = 0; i < combat_effects.size(); ++i)
-            combat_effects[i].load(directory / "sprites.gfs", effect_assets[i], effect_assets[i]);
-        const auto archive = directory / "ui-win.gfs";
-        const auto scene = skullgirls::read_sprite_asset(archive, "ui/Win/Main.gbs");
+        static_assert(std::size(effect_assets) == static_cast<std::size_t>(CombatEffect::burst));
+        for (std::size_t i = 0; i < std::size(effect_assets); ++i)
+            combat_effects[i].load(sprites_archive, effect_assets[i], effect_assets[i]);
+        combat_effects[static_cast<std::size_t>(CombatEffect::burst)].load(
+            sprites_archive, "infinite_burst_break_blue", "infinite_burst_break_fx_BLUE");
+        skullgirls::SpriteArchive ui_win(directory / "ui-win.gfs");
+        const auto scene = ui_win.read("ui/Win/Main.gbs");
         timings = skullgirls::read_menu_timings(scene);
         title = skullgirls::read_title_scene(scene);
         for (std::size_t i = 0; i < title_logo.size(); ++i)
-            title_logo[i].load(skullgirls::read_sprite_asset(archive, title.logo[i].texture));
+            title_logo[i].load(ui_win.read(title.logo[i].texture));
         for (const auto& frame : title.shield) {
             auto texture = std::make_unique<Texture>();
-            texture->load(skullgirls::read_sprite_asset(archive, frame.sprite.texture));
+            texture->load(ui_win.read(frame.sprite.texture));
             title_shield.push_back(std::move(texture));
         }
-        title_font.load(skullgirls::read_sprite_asset(archive, title.font_atlas));
+        title_font.load(ui_win.read(title.font_atlas));
         const auto load_texture = [&](Texture& texture, const std::string& name) {
-            texture.load(skullgirls::read_sprite_asset(archive, "ui/Win/Textures/" + name + ".dds"));
+            texture.load(ui_win.read("ui/Win/Textures/" + name + ".dds"));
         };
         load_texture(hud_atlas[0], "TA_1001_1");
         load_texture(hud_atlas[1], "TA_1001_2");
@@ -3694,7 +5930,7 @@ struct Menu {
         load_texture(stage_arrow, "charselect/UI_option_arrow01");
         load_texture(stage_variant_arrow, "charselect/UI_option_arrow02");
         load_texture(stage_header, "charselect/SG_Team_Select_Size_Main_Header02");
-        load_stages(directory);
+        load_stages(core, ui_win);
         load_texture(select_film, "charselect/charselect_filmstrip_center01");
         load_texture(select_overlay, "charselect/charselect_filmstrip_center02");
         load_texture(select_side, "charselect/charselect_filmstrip_sub01");
@@ -3724,10 +5960,8 @@ struct Menu {
             load_texture(color_buttons_lit[i], "Buttons/Arcade_Buttons_" + std::string(button_names[i]) + "_01");
         }
         load_texture(portrait_frame, "charselect/charselect_portrait_frame01");
-        const auto charselect = skullgirls::read_sprite_asset(archive, "ui/Win/Charselect.gbs");
+        const auto charselect = ui_win.read("ui/Win/Charselect.gbs");
         pedestal_layout = skullgirls::read_pedestal_layout(charselect);
-        const auto sprites_archive = directory / "sprites.gfs";
-        const auto sprite_entries = skullgirls::read_archive_index(sprites_archive);
         for (int side = 0; side < 2; ++side)
             fighter_layout[side] = skullgirls::read_fighter_select_layout(charselect, side == 1);
         for (int i = 0; i < 3; ++i) {
@@ -3747,10 +5981,9 @@ struct Menu {
                 load_texture(fighter_coin[i], "charselect/data_charcoin_" + std::string(name) + "_glow01");
                 const auto prefix = "sprites/character_select_" + std::string(roster[i]);
                 idle_frames[i] = skullgirls::read_select_idle(
-                    skullgirls::read_sprite_asset(sprites_archive, prefix + ".spr.msb"),
-                    skullgirls::read_sprite_asset(sprites_archive, prefix + ".dds"));
+                    sprites_archive.read(prefix + ".spr.msb"), sprites_archive.read(prefix + ".dds"));
                 const auto palette_prefix = "sprites/" + std::string(roster[i]) + "_";
-                for (const auto& entry : sprite_entries) {
+                for (const auto& entry : sprites_archive.entries()) {
                     const std::string_view name = entry.name;
                     if (name.substr(0, palette_prefix.size()) != palette_prefix ||
                         name.size() <= palette_prefix.size() + 5 || name.substr(name.size() - 5) != "p.dds")
@@ -3758,15 +5991,14 @@ struct Menu {
                     const auto suffix = name.substr(palette_prefix.size(), name.size() - palette_prefix.size() - 5);
                     if (suffix.find_first_not_of("0123456789") != std::string_view::npos) continue;
                     palettes[i].push_back({static_cast<unsigned>(std::stoul(std::string(suffix))),
-                        skullgirls::read_dds_palette(skullgirls::read_sprite_asset(sprites_archive, entry.name))});
+                        skullgirls::read_dds_palette(sprites_archive.read(entry.name))});
                 }
                 auto& colors = palettes[i];
                 std::sort(colors.begin(), colors.end(), [](const auto& a, const auto& b) { return a.number < b.number; });
                 if (colors.empty()) throw std::runtime_error("Missing fighter palettes");
             }
         }
-        const auto training_bytes = skullgirls::read_sprite_asset(directory / "ui.gfs",
-            "ui/config/Options/trainingopt.ini");
+        const auto training_bytes = ui.read("ui/config/Options/trainingopt.ini");
         std::istringstream training_config(std::string(training_bytes.begin(), training_bytes.end()));
         for (std::string line; std::getline(training_config, line);) {
             line.erase(std::min(line.size(), line.find('#')));
@@ -3801,10 +6033,26 @@ struct Menu {
         }), training_options.end());
         if (training_options.empty() || training_options.front().keyword != "ACT_PRACTICE")
             throw std::runtime_error("No Training Options in game config");
+        training_options.push_back({L"Dummy Hit Reaction",
+            {L"Default", L"Sliding Knockdown", L"Ceiling Bounce", L"Crumple", L"Stagger", L"Freeze"},
+            0, "PRACTICE_HIT_REACTION"});
+        training_options.push_back({L"Filia Intro", {L"Cycle", L"Hat", L"Trip", L"Bow", L"Off"},
+            0, "PRACTICE_FILIA_INTRO"});
+        training_options.push_back({L"Filia Win Pose", {L"Cycle", L"Hair Blown", L"Sassy", L"Filia Blown"},
+            0, "PRACTICE_FILIA_WIN"});
+        const std::vector<std::wstring> assist_choices{
+            L"Updo (Light)", L"Updo (Medium)", L"Updo (Heavy)",
+            L"Hairball (Light)", L"Hairball (Medium)", L"Hairball (Heavy)",
+            L"Ringlet Spike (Light)", L"Ringlet Spike (Medium)", L"Ringlet Spike (Heavy)",
+        };
+        constexpr std::array<std::size_t, 3> assist_defaults{2, 4, 6};
+        for (std::size_t i = 0; i < practice_assist_options.size(); ++i) {
+            auto label = L"P" + std::to_wstring(i / 3 + 1) + L" Filia " + std::to_wstring(i % 3 + 1) + L" Assist";
+            training_options.push_back({std::move(label), assist_choices, assist_defaults[i % 3], practice_assist_options[i]});
+        }
         for (std::size_t i = 0; i < configs.size(); ++i) {
             if (!*configs[i]) continue;
-            const auto bytes = skullgirls::read_sprite_asset(directory / "ui.gfs",
-                "ui/config/MainMenu/" + std::string(configs[i]) + ".ini");
+            const auto bytes = ui.read("ui/config/MainMenu/" + std::string(configs[i]) + ".ini");
             std::istringstream input(std::string(bytes.begin(), bytes.end()));
             auto& entries = options[i];
             std::string line;
@@ -4173,11 +6421,20 @@ bool create_canvas(HWND window) {
     const auto dc = GetDC(window);
     if (!dc) return false;
     canvas_dc = CreateCompatibleDC(dc);
-    canvas_bitmap = CreateCompatibleBitmap(dc, 1280, 720);
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = 1280;
+    info.bmiHeader.biHeight = -720;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    void* pixels = nullptr;
+    canvas_bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
     ReleaseDC(window, dc);
     if (!canvas_dc || !canvas_bitmap) return false;
-    canvas_previous = SelectObject(canvas_dc, canvas_bitmap);
-    return canvas_previous != nullptr;
+    const auto previous = SelectObject(canvas_dc, canvas_bitmap);
+    if (!previous || previous == HGDI_ERROR) return false;
+    canvas_previous = previous;
+    return true;
 }
 
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -4192,12 +6449,14 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case WM_KILLFOCUS:
         menu.practice_keys_held = {};
         menu.practice_keys_previous = {};
+        menu.practice_attack_edges = {};
         for (auto& player : menu.practice_players) {
             player.practice_left = player.practice_right = false;
             player.practice_down = player.practice_up = false;
             player.normal_input = -1;
             player.queued_followup = -1;
             player.normal_inputs = {};
+            player.buffered_special.reset();
             player.throw_input = false;
             player.pressed_punches = player.pressed_kicks = 0;
             player.held_attack_buttons = 0;
@@ -4357,13 +6616,27 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     return DefWindowProcW(window, message, wparam, lparam);
 }
 
+// Slow motion uses a fraction of the normal update opportunities.
+struct PracticeCadence {
+    unsigned speed = 0;
+    unsigned credit = 0;
+
+    bool update_due(unsigned percent) {
+        if (percent != speed) {
+            speed = percent;
+            credit = 100 - speed;
+        }
+        credit += speed;
+        if (credit < 100) return false;
+        credit -= 100;
+        return true;
+    }
+};
+
 // FUN_00519490 advances the fight before deciding whether to draw that frame.
 bool render_practice_frame(std::chrono::steady_clock::time_point now,
-                           std::chrono::steady_clock::time_point& deadline, unsigned& skipped) {
-    const auto lateness = now - deadline;
-    if (skipped == 3 || lateness > std::chrono::milliseconds(250)) {
-        deadline = now;
-    } else if (lateness > std::chrono::microseconds(5500)) {
+                           std::chrono::steady_clock::time_point deadline, unsigned& skipped) {
+    if (skipped < 3 && now - deadline > std::chrono::microseconds(5500)) {
         ++skipped;
         return false;
     }
@@ -4416,6 +6689,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     constexpr auto frame_period = std::chrono::nanoseconds(16666667);
     menu.animation_start = Clock::now();
     auto deadline = menu.animation_start + frame_period;
+    PracticeCadence practice_cadence;
     unsigned skipped_practice_frames = 0;
     ShowWindow(window, show);
 
@@ -4432,13 +6706,18 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
         const auto now = Clock::now();
         if (now >= deadline) {
             if (menu.training == Menu::TrainingView::practice && !menu.practice_paused) {
-                deadline += frame_period * 100 / menu.practice_speed();
-                menu.practice_tick();
+                // Bound catch-up after suspension or a long stall. Keep the simulation
+                // on its own 60 Hz clock between presentations.
+                if (now - deadline > 4 * frame_period) deadline = now;
+                deadline += frame_period;
+                if (practice_cadence.update_due(menu.practice_speed()))
+                    menu.practice_tick();
                 if (render_practice_frame(Clock::now(), deadline, skipped_practice_frames) && !IsIconic(window))
                     RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
                 continue;
             }
             skipped_practice_frames = 0;
+            practice_cadence = {};
             deadline += frame_period * (1 + (now - deadline) / frame_period);
             if (menu.practice_load.valid() &&
                 menu.practice_load.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -4446,6 +6725,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
                     menu.finish_practice(window);
                     SetWindowTextW(window, L"Skullgirls - Training Room");
                 } catch (const std::exception& error) {
+                    menu.training = Menu::TrainingView::stage_select;
                     SetWindowTextW(window, L"Skullgirls - Select Stage");
                     MessageBoxA(window, error.what(), "Training Room", MB_OK | MB_ICONERROR);
                 }

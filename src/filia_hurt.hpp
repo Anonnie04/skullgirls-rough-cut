@@ -75,7 +75,7 @@ struct NormalHit {
 // Frame numbers are one-based. The FOIT clear flag (FUN_0049a7f0) drops the
 // descriptor before collision checks on the indicated frame.
 // Written values 4/5/6 in hit expressions target the high/mid/low reactions.
-constexpr NormalHit filia_normal_hits[ringlet_spike + 1][6] = {
+constexpr NormalHit filia_normal_hits[][6] = {
     {{8, 16, 7, 3, 10, HurtHeight::high}}, // Move 97
     {{10, 26, 9, 3, 11}}, // Move 100
     {{9, 31, 11, 3, 11}}, // Move 102
@@ -106,25 +106,41 @@ constexpr NormalHit filia_normal_hits[ringlet_spike + 1][6] = {
     {{11, 12, 2, 3, 12}, {13, 19, 16, 3, 14}}, // Moves 155 and 157
     {}, // Ringlet Psych
     {}, // Ringlet Spike uses its child object's hit descriptor.
+    {{10, 8, 5, 3, 12}}, // Born With It
+    {}, // Tricobezoar uses its child object's hit descriptor.
+    {}, {{7, 30, 4, 3}}, {{1, 25, 20, 3, 6}}, {}, {},
+    {}, {{5, 30, 4, 3}}, {{1, 15, 20, 3, 6}}, {}, {}, {},
+    {{26, 16, 7, 3}}, {{3, 16, 3, 3, 5}, {5, 16, 3, 3}}, {{3, 16, 7, 3}}, {},
+    {}, {}, {{4, 16, 0, 3, 5}, {10, 16, 3, 3}}, {}, {},
+    {{16, 10, 13, 3, 18}}, // Snapback, move 196
 };
 constexpr NormalHit ringlet_spike_hit{0, 12, 0, 3};
+constexpr NormalHit tricobezoar_hit{0, 15, 0, 3};
 // The grounded reference capture holds the impact pose for about twelve
 // additional 30 fps frames before the launch begins.
 constexpr unsigned ringlet_grounded_impact_hold = 24;
 
 // Base damage from the same FOIT hit descriptors, in contact order.
-constexpr unsigned filia_hit_damage[ringlet_spike + 1][6] = {
+constexpr unsigned filia_hit_damage[][6] = {
     {300}, {550}, {1000}, {400}, {450}, {1000},
     {200}, {600}, {900}, {200}, {150, 150, 200, 250, 400}, {1100},
     {250}, {250}, {900}, {250}, {200, 350}, {900},
     {200}, {200}, {800, 400}, {950, 400}, {900, 900, 400},
-    {300, 400}, {300, 400}, {}, {},
+    {300, 400}, {300, 400}, {}, {}, {5},
+    {},
+    {}, {300}, {1750}, {}, {},
+    {}, {250}, {1250}, {}, {}, {},
+    {400}, {200, 200}, {400}, {}, {}, {}, {0, 400}, {}, {},
+    {0}, // Snapback
 };
+static_assert(sizeof(filia_normal_hits) / sizeof(filia_normal_hits[0]) == filia_snapback + 1);
+static_assert(sizeof(filia_hit_damage) / sizeof(filia_hit_damage[0]) == filia_snapback + 1);
 
 // Hit expressions from FOIT moves 102, 103, 109 and 110. Moves 103 and 110
 // specify the same forced reaction against grounded and airborne targets.
 struct HeavyReaction {
-    enum Type { none, knockback, ground_bounce, launch, back_knockdown, sweep } type = none;
+    enum Type { none, knockback, ground_bounce, launch, back_knockdown, sweep, wall_bounce, air_launch,
+                sliding, ceiling_bounce, crumple, stagger, freeze } type = none;
     float horizontal = 0, upward = 0;
 };
 // Child record 6 writes target slots 0x9e = -9, 0x9f = 16 and 0x5d = 2.
@@ -132,14 +148,23 @@ struct HeavyReaction {
 constexpr HeavyReaction ringlet_spike_reaction{HeavyReaction::sweep, 9, 16};
 constexpr HeavyReaction filia_heavy_reaction(int move, bool airborne = false) {
     switch (move) {
-    case 2: return airborne ? HeavyReaction{} : HeavyReaction{HeavyReaction::knockback, 6, 28};
-    // Move 103 writes horizontal recoil -30 and vertical launch +18.
-    case 5: return {HeavyReaction::knockback, 30, 18};
+    // Move 102 supplies recoil without forcing a knockdown reaction.
+    case 2: return {HeavyReaction::air_launch, 6, airborne ? 28.0f : 37.0f};
+    // Move 103 selects reaction 8, with horizontal recoil -30 and vertical launch +18.
+    case 5: return {HeavyReaction::wall_bounce, 30, 18};
     case 8: return airborne ? HeavyReaction{} : HeavyReaction{HeavyReaction::ground_bounce, 6, -15};
     case 11: return {HeavyReaction::sweep, 13, 16};
+    case gregor_end: case gregor_air_end: return {HeavyReaction::wall_bounce, 40, 45};
+    case fenrir_start: case fenrir_rise: case fenrir_peak: return {HeavyReaction::launch, 5, 26};
+    case filia_snapback: return {HeavyReaction::knockback, 24, 18};
     default: return {};
     }
 }
+
+// Moves 285 through 289 retain the wall approach pose through the impact entry.
+constexpr NormalFrame filia_wall_fly[] = {{769, 9}, {770, 4}, {771, 4}, {772, 4}};
+constexpr NormalFrame filia_wall_exit[] = {{773, 1}, {774, 3}, {729, 2}};
+constexpr unsigned filia_wall_impact_ticks = 10;
 
 // Crouching HP writes reaction 7, which enters 303/304. On floor contact
 // 305 halves the downward speed and 306 reverses it before dispatching to 275.

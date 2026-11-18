@@ -1,7 +1,7 @@
 #pragma once
 
 #include "gfs.hpp"
-#include "sprite_rle.hpp"
+#include "foit.hpp"
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -24,4 +24,26 @@ private:
 };
 
 SpriteBytes read_sprite_asset(const std::filesystem::path& archive, const std::string& name);
+
+class CharacterAssets {
+public:
+    CharacterAssets(const std::filesystem::path& directory, const std::string& character);
+
+    std::vector<SpriteFrame> read_frames() const;
+    FoitAnimationAsset read_animations(bool read_children = false) const;
+    FoitAnimationAsset read_animations_for_preview(bool require_children) const;
+    SpriteBytes read_default_palette() const;
+
+    // The alternate art bank is loaded once, when a caller first asks for it.
+    const SpriteBytes* find_art(std::uint8_t bank);
+    const SpriteBytes& art(std::uint8_t bank);
+
+private:
+    std::filesystem::path directory_;
+    std::string character_;
+    std::string prefix_;
+    SpriteBytes foit_;
+    SpriteBytes main_art_;
+    std::optional<SpriteBytes> alternate_art_;
+};
 }

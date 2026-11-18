@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace skullgirls {
 
 struct NormalFrame { unsigned sprite, ticks; };
@@ -144,10 +146,137 @@ constexpr NormalFrame filia_normals[][64] = {
         {476, 3}, {477, 3}, {478, 3}, {479, 3}, {0, 1}, {480, 3}, {481, 3},
         {482, 3}, {483, 3}, {484, 3}, {485, 3}, {486, 3},
     },
+    { // Born With It (move 170)
+        {0, 1}, {543, 6}, {0, 1}, {544, 6}, {0, 1}, {545, 6}, {546, 7},
+        {547, 8}, {548, 5}, {0, 1}, {549, 1}, {0, 1}, {549, 5},
+        {550, 6}, {551, 6}, {552, 6}, {0, 1}, {553, 7}, {0, 1}, {554, 8},
+    },
+    { // Tricobezoar (move 191)
+        {0, 1}, {656, 4}, {657, 4}, {0, 1}, {658, 1}, {0, 1}, {658, 3}, {659, 3},
+        {0, 1}, {660, 3}, {661, 4}, {662, 4}, {661, 3}, {663, 3}, {662, 3}, {661, 3},
+        {663, 3}, {662, 3}, {664, 4}, {0, 1}, {0, 1}, {665, 2}, {0, 1}, {0, 1},
+        {666, 2}, {0, 1}, {667, 4}, {668, 4}, {669, 3}, {670, 3}, {669, 3}, {670, 3},
+        {669, 3}, {670, 3}, {669, 3}, {0, 1}, {670, 3}, {669, 3}, {671, 4}, {0, 1},
+        {672, 2}, {673, 2}, {0, 1}, {674, 4}, {0, 1}, {675, 4}, {0, 1}, {676, 4},
+        {0, 1}, {677, 4}, {678, 4}, {679, 4}, {680, 4},
+    },
+    { // Gregor start (move 171)
+        {0, 1}, {555, 4}, {0, 1}, {556, 1}, {0, 1}, {556, 3}, {557, 7}, {0, 1},
+        {0, 1}, {558, 4}, {559, 4}, {560, 4}, {561, 4}, {562, 4}, {0, 1}, {563, 10},
+        {564, 4}, {565, 4}, {566, 7}, {567, 3}, {0, 1}, {568, 3}, {0, 1}, {569, 3},
+        {0, 1}, {570, 3}, {0, 1}, {571, 3}, {0, 1}, {572, 3}, {0, 1}, {573, 3},
+        {0, 1}, {574, 3}, {0, 1}, {575, 3}, {0, 1}, {576, 3}, {0, 1}, {577, 4},
+        {0, 1}, {578, 3}, {0, 1}, {579, 3}, {0, 1}, {0, 1}, {580, 4}, {0, 1},
+    },
+    { // Gregor loop (move 172)
+        {0, 1}, {581, 3}, {0, 1}, {582, 2}, {0, 1}, {583, 2}, {0, 1},
+    },
+    { // Gregor end (move 173)
+        {0, 1}, {584, 3}, {0, 1}, {585, 2}, {0, 1}, {586, 3}, {0, 1}, {587, 2},
+        {0, 1}, {588, 3}, {0, 1}, {589, 2}, {0, 1}, {590, 1}, {0, 1}, {0, 1},
+        {591, 1}, {592, 2}, {593, 1}, {0, 1}, {594, 2}, {595, 1},
+    },
+    { // Gregor skid (move 174)
+        {0, 1}, {596, 3}, {597, 3}, {598, 2}, {598, 1},
+    },
+    { // Gregor stop (move 175)
+        {0, 1}, {599, 5}, {600, 5}, {601, 5},
+    },
+    { // Gregor air start (move 176)
+        {0, 1}, {0, 1}, {568, 3}, {0, 1}, {0, 1}, {569, 1}, {0, 1}, {569, 4},
+        {0, 1}, {0, 1}, {0, 1}, {570, 3}, {0, 1}, {570, 3}, {0, 1}, {571, 3},
+        {0, 1}, {572, 3}, {0, 1}, {573, 3}, {0, 1}, {574, 3}, {0, 1}, {575, 3},
+        {0, 1}, {576, 3}, {0, 1}, {577, 4}, {0, 1}, {578, 3}, {0, 1}, {579, 3},
+        {0, 1}, {0, 1}, {580, 4}, {0, 1},
+    },
+    { // Gregor air loop (move 177)
+        {0, 1}, {602, 3}, {603, 2}, {604, 2}, {0, 1},
+    },
+    { // Gregor air end (move 178)
+        {0, 1}, {584, 3}, {0, 1}, {585, 2}, {585, 3}, {0, 1}, {586, 5}, {0, 1},
+        {587, 5}, {0, 1}, {588, 5}, {0, 1},
+    },
+    { // Gregor fall (move 179)
+        {171, 1}, {171, 2}, {172, 3}, {173, 2}, {174, 3},
+    },
+    { // Gregor fall loop (move 180)
+        {175, 1}, {175, 30},
+    },
+    { // Gregor land (move 181)
+        {0, 1}, {114, 2}, {115, 3}, {116, 4}, {0, 1},
+    },
+    { // Fenrir start (move 182)
+        {0, 1}, {605, 3}, {0, 1}, {606, 1}, {0, 1}, {606, 2}, {607, 3}, {0, 1},
+        {0, 1}, {608, 20}, {609, 3}, {0, 1}, {610, 3}, {611, 3}, {0, 1}, {612, 3},
+        {613, 3}, {0, 1}, {614, 3}, {615, 3}, {616, 3}, {617, 3}, {0, 1}, {0, 1},
+        {618, 1}, {618, 3},
+    },
+    { // Fenrir rise (move 183)
+        {0, 1}, {619, 2}, {620, 2}, {621, 2}, {622, 2},
+    },
+    { // Fenrir peak (move 184)
+        {0, 1}, {623, 4}, {624, 2}, {0, 1},
+    },
+    {}, // Fenrir whiff reuses the fall and landing records from light Updo.
+    { // Fenrir peak hit (move 186)
+        {0, 1}, {625, 4}, {626, 3}, {627, 4}, {628, 3}, {629, 4}, {0, 1}, {630, 3},
+        {0, 1}, {631, 4}, {0, 1},
+    },
+    { // Fenrir bite wait (move 187)
+        {0, 1}, {632, 3}, {633, 3},
+    },
+    { // Fenrir bite (move 188)
+        {0, 1}, {634, 3}, {635, 2}, {635, 1}, {0, 1}, {636, 4}, {637, 15}, {0, 1},
+        {637, 2}, {638, 2},
+    },
+    { // Fenrir dive (move 189)
+        {0, 1}, {639, 3}, {640, 3},
+    },
+    { // Fenrir land (move 190)
+        {0, 1}, {641, 1}, {641, 1}, {642, 2}, {643, 4}, {0, 1}, {643, 2}, {0, 1},
+        {644, 3}, {645, 3}, {646, 3}, {647, 3}, {648, 3}, {0, 1}, {649, 5}, {650, 6},
+        {651, 5}, {652, 3}, {653, 3}, {654, 3}, {655, 3},
+    },
+    { // Snapback (move 196)
+        {0, 1}, {681, 4}, {682, 4}, {683, 3}, {683, 1}, {0, 1}, {684, 4}, {0, 1},
+        {684, 30}, {0, 1}, {685, 3}, {0, 1}, {686, 3}, {0, 1}, {687, 3}, {0, 1},
+        {688, 3}, {0, 1}, {689, 4}, {0, 1}, {690, 4}, {691, 5}, {692, 5}, {693, 5},
+    },
 };
 
+constexpr int filia_launcher = 2;
 constexpr int rapid_stand_lp = 18;
 constexpr int rapid_crouch_lp = 19;
+
+// FOIT move indices in Training's normal order, including the rapid repeats.
+constexpr unsigned filia_foit_normals[] = {
+    97, 100, 102, 99, 101, 103,
+    104, 107, 109, 106, 108, 110,
+    111, 113, 115, 112, 114, 116,
+    98, 105,
+};
+
+constexpr int filia_normal_from_foit(int move) {
+    for (int i = 0; i <= rapid_crouch_lp; ++i)
+        if (move == static_cast<int>(filia_foit_normals[i])) return i;
+    return -1;
+}
+
+// Bits refer to the original zero-based records. These normals assign 1
+// to FOIT variable 0x3a, so FUN_00498ae0 advances again before rendering.
+// Keeping the source indices also keeps the hit-descriptor indices valid.
+constexpr unsigned next_visible_filia_normal_record(int move, unsigned record) {
+    constexpr std::uint32_t immediate[] = {
+        0xa215, 0x15, 0x54015, 0x46805, 0x5515, 0x55ab, // Standing
+        0x5, 0x245, 0x115, 0x105, 0x1555545, 0xb, // Crouching
+        0x15, 0x15551, 0x9, 0x15, 0xa951, 0x513, // Airborne
+        0xa01, 0x5, // Rapid-fire jabs
+    };
+    if (move < 0 || move > rapid_crouch_lp) return record;
+    while (record < 32 && (immediate[move] & (std::uint32_t{1} << record))) ++record;
+    return record;
+}
+
 constexpr int updo_light = 20;
 constexpr int ground_hairball = 23;
 struct UpdoMotion {
@@ -165,6 +294,37 @@ constexpr unsigned updo_air_loop_start = 15;
 constexpr int air_hairball = 24;
 constexpr int ringlet_psych = 25;
 constexpr int ringlet_spike = 26;
+constexpr int filia_taunt = 27;
+constexpr int tricobezoar = 28;
+// Move 191 launches child 3 on record 21. Record 9 starts the sparkle emitter.
+constexpr unsigned tricobezoar_spawn_frame = 20;
+constexpr unsigned tricobezoar_charge_ticks = 2;
+constexpr unsigned tricobezoar_start_ticks = 4;
+constexpr int gregor_start = 29;
+constexpr int gregor_loop = 30;
+constexpr int gregor_end = 31;
+constexpr int gregor_skid = 32;
+constexpr int gregor_stop = 33;
+constexpr int gregor_air_start = 34;
+constexpr int gregor_air_loop = 35;
+constexpr int gregor_air_end = 36;
+constexpr int gregor_fall = 37;
+constexpr int gregor_fall_loop = 38;
+constexpr int gregor_land = 39;
+constexpr int fenrir_start = 40;
+constexpr int fenrir_rise = 41;
+constexpr int fenrir_peak = 42;
+constexpr int fenrir_fall = 43;
+// Moves 185, 167 and 168 share this part of the light Updo sequence.
+constexpr unsigned fenrir_fall_start = 19;
+constexpr unsigned fenrir_fall_loop = 26;
+constexpr unsigned fenrir_whiff_landing = 31;
+constexpr int fenrir_peak_hit = 44;
+constexpr int fenrir_bite_wait = 45;
+constexpr int fenrir_bite = 46;
+constexpr int fenrir_dive = 47;
+constexpr int fenrir_land = 48;
+constexpr int filia_snapback = 49;
 // Quarter-circle enters 141/143/145 for two records. The half-circle
 // routes through 140/142/144 for one additional record first.
 constexpr unsigned ringlet_quarter_entry_ticks = 2;
@@ -173,25 +333,21 @@ constexpr unsigned ringlet_spawn_frame = 9;
 constexpr float ringlet_distance[] = {170, 470, 770};
 // Ringlet's child move at 0x1c1166 points into Filia's main sprite table.
 // The descriptor is armed on record 6 and cleared by the flag on record 16.
-// Shorten the cosmetic spin after record 16 so the dissolve ends with
-// Filia's recovery. The visible startup and hit records keep their FOIT timing.
+constexpr unsigned ringlet_first_pose_frame = 1;
 constexpr unsigned ringlet_spike_arm_frame = 6;
 constexpr unsigned ringlet_spike_clear_frame = 16;
+constexpr unsigned ringlet_short_spin_end = 24;
+constexpr unsigned ringlet_dissolve_frame = 36;
+constexpr unsigned ringlet_unlock_frame = 38;
 constexpr NormalFrame ringlet_spike_frames[] = {
     {0, 1}, {1170, 4}, {0, 1}, {0, 1}, {0, 1}, {1171, 3}, {1172, 3},
     {1173, 2}, {1174, 2}, {1175, 2}, {1173, 2}, {1174, 2}, {1175, 2},
     {1173, 2}, {1174, 2}, {1175, 2}, {0, 1},
-    {1175, 1},
+    {1173, 2}, {1174, 2}, {1175, 2}, {1173, 2}, {1174, 2}, {1175, 2},
+    {1173, 2}, {1174, 2}, {1175, 2}, {1173, 2}, {1174, 2}, {1175, 2},
+    {1173, 2}, {1174, 2}, {1175, 2}, {1173, 2}, {1174, 2}, {1175, 2}, {1173, 2},
     {1176, 3}, {1177, 3}, {1178, 3}, {1179, 3}, {1179, 1},
 };
-static_assert([] {
-    unsigned recovery = 0;
-    for (unsigned i = ringlet_spawn_frame; filia_normals[ringlet_spike][i].ticks; ++i)
-        recovery += filia_normals[ringlet_spike][i].ticks;
-    unsigned drill = 0;
-    for (const auto& frame : ringlet_spike_frames) drill += frame.ticks;
-    return recovery == drill;
-}(), "Ringlet Spike must disappear when the caster returns to idle");
 // Startup and loop each have the same record counts for ground and air.
 constexpr unsigned hairball_loop_frame = 6;
 constexpr unsigned hairball_end_frame = 11;

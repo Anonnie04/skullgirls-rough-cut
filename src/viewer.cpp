@@ -4,13 +4,17 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <list>
 #include <string>
 #include <vector>
 #include <stdexcept>
 #include <memory>
+#include <optional>
+#include <string_view>
 #include "foit.hpp"
 #include "sprite_asset.hpp"
 
@@ -18,11 +22,18 @@ namespace {
 
 constexpr UINT open_image = 1;
 constexpr UINT exit_viewer = 2;
-constexpr UINT play_filia = 3;
+constexpr UINT play_sprite = 3;
 constexpr UINT pause_playback = 4;
 constexpr UINT previous_sprite = 5;
 constexpr UINT next_sprite = 6;
+constexpr UINT previous_animation = 7;
+constexpr UINT next_animation = 8;
+constexpr UINT first_sprite_slot = 9;
+constexpr UINT follow_successor = 12;
 constexpr UINT_PTR playback_timer = 1;
+
+using Clock = std::chrono::steady_clock;
+using SpriteTicks = std::chrono::duration<std::int64_t, std::ratio<1, 60>>;
 
 struct Image {
     int width = 0;
@@ -71,20 +82,91 @@ bool load_image(const wchar_t* path)
     return true;
 }
 
-struct FiliaSprites {
-    skullgirls::SpriteBytes main_art, alternate_art, palette;
+struct SpritePlacement {
+    const skullgirls::SpriteLayer* layer = nullptr;
+    const skullgirls::SpriteLayer* overlay = nullptr;
+    const skullgirls::SpriteBytes* art = nullptr;
+    std::int64_t x = 0, y = 0;
+};
+
+struct AnimationPreview {
+    std::vector<skullgirls::FoitAnimation> clips;
+    std::vector<std::uint16_t> successors;
+    std::vector<std::string> names;
+    std::optional<std::size_t> child;
+    std::size_t clip = 0, slot = 1;
+    std::size_t record = 0;
+    std::vector<SpritePlacement> sprites;
+    std::vector<std::uint64_t> end_ticks;
+    std::list<std::pair<const skullgirls::SpriteLayer*, Image>> decoded;
+    std::size_t decoded_pixels = 0;
+    std::int64_t left = 0, top = 0, right = 0, bottom = 0;
+    std::uint64_t tick = 0;
+    Clock::time_point started;
+    bool playing = false;
+    bool follow = false;
+};
+
+struct CharacterSprites {
+    CharacterSprites(const std::filesystem::path& directory, const std::string& character)
+        : assets(directory, character), palette(assets.read_default_palette()),
+          name(character.begin(), character.end()) {}
+
+    skullgirls::CharacterAssets assets;
+    skullgirls::SpritePaletteLookup palette;
     std::vector<skullgirls::SpriteFrame> frames;
     std::vector<std::pair<std::size_t, std::size_t>> layers;
     std::size_t current = 0;
     std::vector<bool> unavailable;
+    std::optional<AnimationPreview> animation;
+    std::wstring name;
 };
 
-std::unique_ptr<FiliaSprites> filia;
+std::unique_ptr<CharacterSprites> character_sprites;
 
-void show_filia_sprite(HWND window, int direction)
+skullgirls::SpriteBytes decode_rgba(const CharacterSprites& sprites, const skullgirls::SpriteLayer& layer,
+                                  const skullgirls::SpriteBytes& art)
 {
-    if (!filia) return;
-    auto& sprites = *filia;
+    const auto raw = skullgirls::decode_sprite_layer(layer, art);
+    skullgirls::SpriteBytes rgba(raw.size() / 3 * 4);
+    for (std::size_t i = 0, j = 0; i < raw.size(); i += 3, j += 4) {
+        const auto argb = sprites.palette.argb(raw[i + 2], raw[i + 1]);
+        rgba[j] = static_cast<std::uint8_t>(argb >> 16);
+        rgba[j + 1] = static_cast<std::uint8_t>(argb >> 8);
+        rgba[j + 2] = static_cast<std::uint8_t>(argb);
+        rgba[j + 3] = static_cast<std::uint8_t>(argb >> 24);
+    }
+    return rgba;
+}
+
+Image decode_layer(const CharacterSprites& sprites, const skullgirls::SpriteLayer& layer,
+                   const skullgirls::SpriteBytes& art, const skullgirls::SpriteLayer* overlay = nullptr)
+{
+    auto rgba = decode_rgba(sprites, layer, art);
+    if (overlay) skullgirls::composite_sprite_rgba(rgba, decode_rgba(sprites, *overlay, art));
+    Image next;
+    next.width = layer.tile_columns * 16;
+    next.height = layer.tile_rows * 16;
+    next.pixels.resize(rgba.size() / 4);
+    for (int y = 0; y < next.height; ++y) {
+        for (int x = 0; x < next.width; ++x) {
+            const auto pixel = y * next.width + x;
+            const auto* texel = rgba.data() + pixel * 4;
+            const unsigned alpha = texel[3];
+            const unsigned background = ((x / 8 + y / 8) % 2) ? 192 : 224;
+            const auto blend = [&](unsigned channel) {
+                return (texel[channel] * alpha + background * (255 - alpha) + 127) / 255;
+            };
+            next.pixels[pixel] = (blend(0) << 16) | (blend(1) << 8) | blend(2);
+        }
+    }
+    return next;
+}
+
+void show_sprite(HWND window, int direction)
+{
+    if (!character_sprites) return;
+    auto& sprites = *character_sprites;
     const auto count = sprites.layers.size();
     for (std::size_t attempts = 0; attempts < count; ++attempts) {
         if (direction > 0) sprites.current = (sprites.current + 1) % count;
@@ -94,31 +176,13 @@ void show_filia_sprite(HWND window, int direction)
         const auto [frame_index, slot] = sprites.layers[sprites.current];
         const auto& frame = sprites.frames[frame_index];
         const auto& layer = *frame.layers[slot];
-        const auto& art = frame.art_bank == 4 ? sprites.alternate_art : sprites.main_art;
         try {
-            const auto raw = skullgirls::decode_sprite_layer(layer, art);
-            const auto rgba = skullgirls::colorize_sprite_with_palette(raw, sprites.palette);
-            Image next;
-            next.width = layer.tile_columns * 16;
-            next.height = layer.tile_rows * 16;
-            next.pixels.resize(rgba.size() / 4);
-            for (int y = 0; y < next.height; ++y) {
-                for (int x = 0; x < next.width; ++x) {
-                    const auto pixel = y * next.width + x;
-                    const auto* p = rgba.data() + 4 * pixel;
-                    const unsigned background = ((x / 8 + y / 8) % 2) ? 192 : 224;
-                    const auto blend = [&](unsigned c) {
-                        return (p[c] * p[3] + background * (255 - p[3]) + 127) / 255;
-                    };
-                    next.pixels[pixel] = (blend(0) << 16) | (blend(1) << 8) | blend(2);
-                }
-            }
-            image = std::move(next);
+            image = decode_layer(sprites, layer, sprites.assets.art(frame.art_bank));
             const auto title = L"Skullgirls Sprite Viewer - Filia | Frame " + std::to_wstring(frame_index)
                 + L", layer " + std::to_wstring(slot) + L" | "
                 + std::to_wstring(sprites.current + 1) + L"/" + std::to_wstring(count);
             SetWindowTextW(window, title.c_str());
-            InvalidateRect(window, nullptr, TRUE);
+            InvalidateRect(window, nullptr, FALSE);
             return;
         } catch (const std::runtime_error&) {
             sprites.unavailable[sprites.current] = true;
@@ -128,21 +192,35 @@ void show_filia_sprite(HWND window, int direction)
     MessageBoxW(window, L"No supported Filia sprite layers could be decoded.", L"Filia", MB_OK | MB_ICONERROR);
 }
 
+std::unique_ptr<CharacterSprites> load_character(const std::filesystem::path& directory,
+                                                const std::string& name, bool timelines,
+                                                std::optional<std::size_t> child = std::nullopt)
+{
+    auto sprites = std::make_unique<CharacterSprites>(directory, name);
+    if (timelines) {
+        auto asset = sprites->assets.read_animations_for_preview(child.has_value());
+        auto& table = child ? asset.children.at(*child) : asset;
+        sprites->frames = std::move(asset.sprites);
+        auto& animation = sprites->animation.emplace();
+        animation.clips = std::move(table.animations);
+        animation.successors = std::move(table.successors);
+        animation.names = std::move(table.names);
+        animation.child = child;
+    } else {
+        sprites->frames = sprites->assets.read_frames();
+    }
+    for (const auto& frame : sprites->frames)
+        sprites->assets.find_art(frame.art_bank);
+    return sprites;
+}
+
 void open_filia(HWND window, const std::filesystem::path& directory)
 {
-    using skullgirls::read_sprite_asset;
     try {
-        auto next = std::make_unique<FiliaSprites>();
-        next->main_art = read_sprite_asset(directory / "characters-art.gfs", "characters/filia.art");
-        next->alternate_art = read_sprite_asset(directory / "characters-art-pt.gfs", "characters/filia.art-pt");
-        const auto foit = read_sprite_asset(directory / "characters-foits.gfs", "characters/filia.foit");
-        next->palette = skullgirls::is_versioned_foit(foit)
-            ? skullgirls::read_dds_palette(read_sprite_asset(directory / "sprites.gfs", "sprites/filia_1p.dds"))
-            : skullgirls::read_legacy_palette(foit);
-        next->frames = skullgirls::read_foit_frames(foit, next->main_art.size());
+        auto next = load_character(directory, "filia", false);
         for (std::size_t i = 0; i < next->frames.size(); ++i) {
             const auto& frame = next->frames[i];
-            if (frame.art_bank != 4 && frame.art_bank != 5) continue;
+            if (!next->assets.find_art(frame.art_bank)) continue;
             for (std::size_t slot = 0; slot < frame.layers.size(); ++slot) {
                 const auto& layer = frame.layers[slot];
                 if (layer && layer->used_tiles) next->layers.emplace_back(i, slot);
@@ -150,10 +228,213 @@ void open_filia(HWND window, const std::filesystem::path& directory)
         }
         if (next->layers.empty()) throw std::runtime_error("No Filia layers");
         next->unavailable.resize(next->layers.size());
-        filia = std::move(next);
-        show_filia_sprite(window, 0);
+        character_sprites = std::move(next);
+        show_sprite(window, 0);
     } catch (const std::exception&) {
         MessageBoxW(window, L"Could not load Filia from the Skullgirls data directory.", L"Filia", MB_OK | MB_ICONERROR);
+    }
+}
+
+SpritePlacement locate_sprite(CharacterSprites& sprites, unsigned reference)
+{
+    if (!reference || reference > sprites.frames.size()) return {};
+    const auto& frame = sprites.frames[reference - 1];
+    const auto* art = sprites.assets.find_art(frame.art_bank);
+    if (!art) return {};
+    for (std::size_t i = 0; i < frame.layers.size(); ++i) {
+        const auto& layer = frame.layers[i];
+        if (!layer || !layer->used_tiles) continue;
+        const auto x = (i == 0 ? frame.primary_layer_offset[0] : 0) - std::int64_t(frame.origin[0]);
+        const auto y = (i == 0 ? frame.primary_layer_offset[1] : 0) - std::int64_t(frame.origin[1]);
+        const auto& second = frame.layers[1];
+        const auto* overlay = i == 0 && second && second->used_tiles &&
+            second->tile_columns == layer->tile_columns && second->tile_rows == layer->tile_rows
+            ? &*second : nullptr;
+        return {&*layer, overlay, art, x, y};
+    }
+    return {};
+}
+
+void show_record(HWND window, AnimationPreview& animation, std::size_t record)
+{
+    if (record == animation.record) return;
+    const auto& clip = animation.clips[animation.clip];
+    const auto& sprite = animation.sprites[record];
+    if (animation.record >= clip.size() || animation.sprites[animation.record].layer != sprite.layer) {
+        auto cached = std::find_if(animation.decoded.begin(), animation.decoded.end(),
+            [&](const auto& entry) { return entry.first == sprite.layer; });
+        if (cached == animation.decoded.end()) {
+            Image next;
+            try {
+                if (sprite.layer) next = decode_layer(*character_sprites, *sprite.layer, *sprite.art, sprite.overlay);
+            } catch (const std::runtime_error&) {
+                // Keep the record and its timing visible if the sprite cannot be decoded.
+            }
+            constexpr auto pixel_budget = 8u * 1024 * 1024;
+            while (!animation.decoded.empty() && (animation.decoded.size() == 128 ||
+                   animation.decoded_pixels + next.pixels.size() > pixel_budget)) {
+                animation.decoded_pixels -= animation.decoded.back().second.pixels.size();
+                animation.decoded.pop_back();
+            }
+            animation.decoded_pixels += next.pixels.size();
+            animation.decoded.emplace_front(sprite.layer, std::move(next));
+        } else {
+            animation.decoded.splice(animation.decoded.begin(), animation.decoded, cached);
+        }
+    }
+    animation.record = record;
+    auto title = L"Skullgirls Sprite Viewer - " + character_sprites->name + L" | Animation ";
+    if (animation.child) title += std::to_wstring(*animation.child) + L":";
+    title += std::to_wstring(animation.clip);
+    if (!animation.names.empty()) {
+        const auto& name = animation.names[animation.clip];
+        if (!name.empty()) title += L" " + std::wstring(name.begin(), name.end());
+    }
+    title += L" | Slot " + std::to_wstring(animation.slot + 1)
+        + L" | Record " + std::to_wstring(record + 1) + L"/" + std::to_wstring(clip.size())
+        + L" (" + std::to_wstring(clip[record].ticks) + L" ticks)"
+        + L" | Default next " + std::to_wstring(animation.successors[animation.clip]);
+    SetWindowTextW(window, title.c_str());
+    InvalidateRect(window, nullptr, FALSE);
+}
+
+void prepare_clip(HWND window, AnimationPreview& animation, std::size_t record)
+{
+    const auto& clip = animation.clips[animation.clip];
+    animation.sprites.resize(clip.size());
+    animation.end_ticks.resize(clip.size());
+    animation.left = animation.top = animation.right = animation.bottom = 0;
+    SpritePlacement sprite;
+    std::uint64_t elapsed = 0;
+    for (std::size_t i = 0; i < clip.size(); ++i) {
+        const auto reference = clip[i].sprites[animation.slot];
+        if (reference) sprite = locate_sprite(*character_sprites, reference);
+        animation.sprites[i] = sprite;
+        animation.end_ticks[i] = elapsed += std::max(1u, unsigned(clip[i].ticks));
+        if (sprite.layer) {
+            animation.left = std::min(animation.left, sprite.x);
+            animation.top = std::min(animation.top, sprite.y);
+            animation.right = std::max(animation.right, sprite.x + sprite.layer->tile_columns * 16);
+            animation.bottom = std::max(animation.bottom, sprite.y + sprite.layer->tile_rows * 16);
+        }
+    }
+    animation.record = clip.size();
+    show_record(window, animation, record);
+}
+
+std::uint64_t animation_elapsed(const AnimationPreview& animation, Clock::time_point now)
+{
+    const auto elapsed = animation.playing
+        ? std::chrono::duration_cast<SpriteTicks>(now - animation.started).count() : 0;
+    return animation.tick + static_cast<std::uint64_t>(elapsed);
+}
+
+void advance_animation(HWND window, AnimationPreview& animation)
+{
+    if (!animation.playing || !animation.end_ticks.back()) return;
+    const auto now = Clock::now();
+    auto tick = animation_elapsed(animation, now);
+    const auto length = animation.end_ticks.back();
+    if (animation.follow && tick >= length) {
+        auto successor = animation.successors[animation.clip];
+        for (std::size_t remaining = animation.clips.size(); remaining && animation.clips[successor].empty(); --remaining)
+            successor = animation.successors[successor];
+        if (successor != animation.clip && !animation.clips[successor].empty()) {
+            animation.clip = successor;
+            animation.tick = tick - length;
+            animation.started = now;
+            prepare_clip(window, animation, 0);
+            tick = std::min(animation.tick, animation.end_ticks.back() - 1);
+        }
+    }
+    const auto found = std::upper_bound(animation.end_ticks.begin(), animation.end_ticks.end(),
+                                        tick % animation.end_ticks.back());
+    show_record(window, animation, static_cast<std::size_t>(found - animation.end_ticks.begin()));
+}
+
+void set_playback(HWND window, bool playing)
+{
+    if (!character_sprites) return;
+    if (auto& animation = character_sprites->animation) {
+        if (playing == animation->playing) return;
+        if (playing) {
+            if (!animation->end_ticks.back() || !SetTimer(window, playback_timer, 10, nullptr)) return;
+            animation->started = Clock::now();
+            animation->playing = true;
+            advance_animation(window, *animation);
+            return;
+        }
+        advance_animation(window, *animation);
+        const auto length = animation->end_ticks.back();
+        animation->tick = length ? animation_elapsed(*animation, Clock::now()) % length : 0;
+        animation->playing = false;
+    } else if (playing) {
+        SetTimer(window, playback_timer, 125, nullptr);
+        return;
+    }
+    KillTimer(window, playback_timer);
+}
+
+void step_record(HWND window, int direction)
+{
+    set_playback(window, false);
+    if (!character_sprites) return;
+    if (auto& animation = character_sprites->animation) {
+        const auto count = animation->sprites.size();
+        const auto record = (animation->record + (direction > 0 ? 1 : count - 1)) % count;
+        animation->tick = record ? animation->end_ticks[record - 1] : 0;
+        show_record(window, *animation, record);
+    } else {
+        show_sprite(window, direction);
+    }
+}
+
+void step_clip(HWND window, AnimationPreview& animation, int direction)
+{
+    const auto count = animation.clips.size();
+    do {
+        animation.clip = (animation.clip + (direction > 0 ? 1 : count - 1)) % count;
+    } while (animation.clips[animation.clip].empty());
+    animation.tick = 0;
+    prepare_clip(window, animation, 0);
+    animation.started = Clock::now();
+}
+
+void open_animation(HWND window, const std::filesystem::path& directory,
+                    std::wstring_view character, std::wstring_view index)
+{
+    try {
+        if (character.empty() || character.find_first_not_of(L"abcdefghijklmnopqrstuvwxyz_0123456789") != character.npos)
+            throw std::runtime_error("Use a lowercase character asset name");
+        const auto number = [](std::wstring_view text) {
+            if (text.empty() || text.find_first_not_of(L"0123456789") != text.npos || text.size() > 5)
+                throw std::runtime_error("Use a numeric animation index or child:move");
+            std::size_t value = 0;
+            for (wchar_t digit : text) value = value * 10 + static_cast<unsigned>(digit - L'0');
+            return value;
+        };
+        std::optional<std::size_t> child;
+        const auto colon = index.find(L':');
+        if (colon != index.npos) {
+            child = number(index.substr(0, colon));
+            index.remove_prefix(colon + 1);
+        }
+        const auto clip = number(index);
+        std::string name;
+        name.reserve(character.size());
+        for (wchar_t letter : character) name.push_back(static_cast<char>(letter));
+        auto next = load_character(directory, name, true, child);
+        auto& animation = *next->animation;
+        if (clip >= animation.clips.size()) throw std::runtime_error("Animation index is out of range");
+        if (animation.clips[clip].empty()) throw std::runtime_error("This animation has no frame records");
+        animation.clip = clip;
+        character_sprites = std::move(next);
+        prepare_clip(window, animation, 0);
+        set_playback(window, true);
+    } catch (const std::exception& error) {
+        const std::string detail(error.what());
+        const std::wstring message(detail.begin(), detail.end());
+        MessageBoxW(window, message.c_str(), L"Open animation", MB_OK | MB_ICONERROR);
     }
 }
 
@@ -177,9 +458,9 @@ void choose_image(HWND window)
         if (item) item->Release();
         if (loaded) {
             KillTimer(window, playback_timer);
-            filia.reset();
+            character_sprites.reset();
             SetWindowTextW(window, L"Skullgirls Sprite Viewer - Preview");
-            InvalidateRect(window, nullptr, TRUE);
+            InvalidateRect(window, nullptr, FALSE);
         } else {
             MessageBoxW(window, L"Could not read the RGBA PAM image.", L"Open sprite", MB_OK | MB_ICONERROR);
         }
@@ -189,51 +470,114 @@ void choose_image(HWND window)
 
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
 {
+    auto* animation = character_sprites && character_sprites->animation
+        ? &*character_sprites->animation : nullptr;
     switch (message) {
+    case WM_INITMENUPOPUP: {
+        const auto submenu = reinterpret_cast<HMENU>(wparam);
+        for (UINT command = previous_animation; command <= follow_successor; ++command)
+            EnableMenuItem(submenu, command, MF_BYCOMMAND | (animation ? MF_ENABLED : MF_GRAYED));
+        if (animation) {
+            CheckMenuRadioItem(submenu, first_sprite_slot, first_sprite_slot + 2,
+                               first_sprite_slot + static_cast<UINT>(animation->slot), MF_BYCOMMAND);
+            CheckMenuItem(submenu, follow_successor,
+                          MF_BYCOMMAND | (animation->follow ? MF_CHECKED : MF_UNCHECKED));
+        }
+        return 0;
+    }
     case WM_COMMAND:
         switch (LOWORD(wparam)) {
         case open_image: choose_image(window); return 0;
-        case play_filia:
-            if (filia) SetTimer(window, playback_timer, 125, nullptr);
-            return 0;
-        case pause_playback: KillTimer(window, playback_timer); return 0;
+        case play_sprite: set_playback(window, true); return 0;
+        case pause_playback: set_playback(window, false); return 0;
         case previous_sprite:
         case next_sprite:
-            KillTimer(window, playback_timer);
-            show_filia_sprite(window, LOWORD(wparam) == next_sprite ? 1 : -1);
+            step_record(window, LOWORD(wparam) == next_sprite ? 1 : -1);
+            return 0;
+        case previous_animation:
+        case next_animation:
+            if (animation) step_clip(window, *animation, LOWORD(wparam) == next_animation ? 1 : -1);
+            return 0;
+        case follow_successor:
+            if (animation) {
+                const auto now = Clock::now();
+                animation->tick = animation_elapsed(*animation, now) % animation->end_ticks.back();
+                animation->started = now;
+                animation->follow = !animation->follow;
+            }
+            return 0;
+        case first_sprite_slot:
+        case first_sprite_slot + 1:
+        case first_sprite_slot + 2:
+            if (animation) {
+                animation->slot = LOWORD(wparam) - first_sprite_slot;
+                prepare_clip(window, *animation, animation->record);
+            }
             return 0;
         case exit_viewer: DestroyWindow(window); return 0;
         }
         break;
+    case WM_KEYDOWN:
+        switch (wparam) {
+        case VK_LEFT: step_record(window, -1); return 0;
+        case VK_RIGHT: step_record(window, 1); return 0;
+        case VK_PRIOR:
+        case VK_NEXT:
+            if (animation) step_clip(window, *animation, wparam == VK_NEXT ? 1 : -1);
+            return 0;
+        case VK_SPACE:
+            if (animation && !(lparam & (1L << 30))) set_playback(window, !animation->playing);
+            return 0;
+        }
+        break;
     case WM_TIMER:
-        if (wparam == playback_timer) show_filia_sprite(window, 1);
+        if (wparam == playback_timer) {
+            if (animation) advance_animation(window, *animation);
+            else show_sprite(window, 1);
+        }
         return 0;
     case WM_SIZE:
-        InvalidateRect(window, nullptr, TRUE);
+        InvalidateRect(window, nullptr, FALSE);
         return 0;
+    case WM_ERASEBKGND:
+        return 1;
     case WM_PAINT: {
         PAINTSTRUCT paint{};
         HDC dc = BeginPaint(window, &paint);
         RECT bounds{};
         GetClientRect(window, &bounds);
-        if (image.pixels.empty()) {
-            DrawTextW(dc, L"Open a sprite from the File menu", -1, &bounds,
+        const auto background = GetSysColorBrush(COLOR_WINDOW);
+        const auto& displayed = animation && !animation->decoded.empty() ? animation->decoded.front().second : image;
+        if (displayed.pixels.empty()) {
+            FillRect(dc, &bounds, background);
+            DrawTextW(dc, animation ? L"No drawable sprite in this record" : L"Open a sprite from the File menu", -1, &bounds,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         } else if (bounds.right > 0 && bounds.bottom > 0) {
-            const auto scale = std::min({1.0, double(bounds.right) / image.width,
-                                        double(bounds.bottom) / image.height});
-            const auto width = std::max(1, static_cast<int>(image.width * scale));
-            const auto height = std::max(1, static_cast<int>(image.height * scale));
+            const auto view_width = animation ? animation->right - animation->left : displayed.width;
+            const auto view_height = animation ? animation->bottom - animation->top : displayed.height;
+            const auto scale = std::min({1.0, double(bounds.right) / view_width,
+                                        double(bounds.bottom) / view_height});
+            const auto width = std::max(1, static_cast<int>(displayed.width * scale));
+            const auto height = std::max(1, static_cast<int>(displayed.height * scale));
+            int x = (bounds.right - static_cast<int>(view_width * scale)) / 2;
+            int y = (bounds.bottom - static_cast<int>(view_height * scale)) / 2;
+            if (animation) {
+                const auto& sprite = animation->sprites[animation->record];
+                x += static_cast<int>((sprite.x - animation->left) * scale);
+                y += static_cast<int>((sprite.y - animation->top) * scale);
+            }
+            const RECT border[] = {{0, 0, bounds.right, y}, {0, y + height, bounds.right, bounds.bottom},
+                                   {0, y, x, y + height}, {x + width, y, bounds.right, y + height}};
+            for (const auto& rect : border) FillRect(dc, &rect, background);
             BITMAPINFO bitmap{};
             bitmap.bmiHeader.biSize = sizeof(bitmap.bmiHeader);
-            bitmap.bmiHeader.biWidth = image.width;
-            bitmap.bmiHeader.biHeight = -image.height;
+            bitmap.bmiHeader.biWidth = displayed.width;
+            bitmap.bmiHeader.biHeight = -displayed.height;
             bitmap.bmiHeader.biPlanes = 1;
             bitmap.bmiHeader.biBitCount = 32;
             bitmap.bmiHeader.biCompression = BI_RGB;
-            StretchDIBits(dc, (bounds.right - width) / 2, (bounds.bottom - height) / 2,
-                          width, height, 0, 0, image.width, image.height,
-                          image.pixels.data(), &bitmap, DIB_RGB_COLORS, SRCCOPY);
+            StretchDIBits(dc, x, y, width, height, 0, 0, displayed.width, displayed.height,
+                          displayed.pixels.data(), &bitmap, DIB_RGB_COLORS, SRCCOPY);
         }
         EndPaint(window, &paint);
         return 0;
@@ -266,10 +610,18 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show)
         !AppendMenuW(file, MF_STRING, exit_viewer, L"E&xit") ||
         !AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File") ||
         !playback ||
-        !AppendMenuW(playback, MF_STRING, play_filia, L"&Play") ||
+        !AppendMenuW(playback, MF_STRING, play_sprite, L"&Play") ||
         !AppendMenuW(playback, MF_STRING, pause_playback, L"P&ause") ||
-        !AppendMenuW(playback, MF_STRING, previous_sprite, L"&Previous sprite") ||
-        !AppendMenuW(playback, MF_STRING, next_sprite, L"&Next sprite") ||
+        !AppendMenuW(playback, MF_STRING, previous_sprite, L"&Previous frame") ||
+        !AppendMenuW(playback, MF_STRING, next_sprite, L"&Next frame") ||
+        !AppendMenuW(playback, MF_SEPARATOR, 0, nullptr) ||
+        !AppendMenuW(playback, MF_STRING, previous_animation, L"Previous &animation") ||
+        !AppendMenuW(playback, MF_STRING, next_animation, L"Next a&nimation") ||
+        !AppendMenuW(playback, MF_STRING, follow_successor, L"Follow &default successor") ||
+        !AppendMenuW(playback, MF_SEPARATOR, 0, nullptr) ||
+        !AppendMenuW(playback, MF_STRING, first_sprite_slot, L"Sprite slot &1") ||
+        !AppendMenuW(playback, MF_STRING, first_sprite_slot + 1, L"Sprite slot &2") ||
+        !AppendMenuW(playback, MF_STRING, first_sprite_slot + 2, L"Sprite slot &3") ||
         !AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(playback), L"&Playback")) return 1;
 
     HWND window = CreateWindowExW(0, window_class.lpszClassName, L"Skullgirls Sprite Viewer",
@@ -282,7 +634,13 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show)
     auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv && argc == 3 && std::wstring(argv[1]) == L"--filia") {
         open_filia(window, argv[2]);
-        if (filia) SetTimer(window, playback_timer, 125, nullptr);
+        set_playback(window, true);
+    } else if (argv && argc > 1 && std::wstring_view(argv[1]) == L"--animation") {
+        if (argc == 4 || argc == 5)
+            open_animation(window, argv[2], argv[3], argc == 5 ? argv[4] : L"0");
+        else
+            MessageBoxW(window, L"Use --animation <data-directory> <character> [[child:]move].",
+                        L"Open animation", MB_OK | MB_ICONERROR);
     } else if (argv && argc == 2) {
         if (load_image(argv[1])) {
             SetWindowTextW(window, L"Skullgirls Sprite Viewer - Preview");
