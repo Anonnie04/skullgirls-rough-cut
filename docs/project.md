@@ -5,8 +5,8 @@ Windows build. The project loads assets at runtime from a local installation
 of the game.
 
 The Windows preview covers the title screen, main menu, Training Options,
-character and palette selection, stage selection, and a playable Class Notes
-training room for Filia. The command-line tools inspect GFS archives and
+character and palette selection, stage selection, and a playable Training
+Room for Filia. The command-line tools inspect GFS archives and
 export sprite layers and frames.
 
 ## Build and run the preview
@@ -24,7 +24,13 @@ Press a key at the title screen. Use the arrow keys to navigate, Z or A to
 accept, and X or S to go back. Open Training, then Training Room, to reach
 Training Options and Character Select.
 
-Select Filia for both players and choose Class Notes to try two-player Training.
+Select Filia for both players and choose any stage to try two-player Training.
+Use Up and Down on Stage Select to choose an alternate where available.
+All 32 entries in the installed stage roster are playable. The three Arena
+tournament variants use the shared 3D Arena scene with their original texture
+sets. Medici Tower, Training Stage, and Boardwalk use the original 2D backdrops.
+3D stages use the original clip durations for supported intro and idle texture
+animations. Skinned scenery uses its bind pose.
 Player 1 uses the arrow keys to move, A/S/D for punches, and Z/X/C for kicks.
 Player 2 uses J/L to walk, K to crouch, I to jump, V/B/N for punches, and F/G/H
 for kicks. Double-tap a direction to dash. R resets both fighters. Press

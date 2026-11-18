@@ -9,9 +9,9 @@ namespace {
 
 class IndexReader {
 public:
-    explicit IndexReader(const std::filesystem::path& path)
-        : input_(path, std::ios::binary | std::ios::ate)
+    explicit IndexReader(std::istream& input) : input_(input)
     {
+        input_.seekg(0, std::ios::end);
         const auto end = input_.tellg();
         if (end < 0 || !input_.seekg(0)) {
             throw std::runtime_error("Cannot open GFS archive");
@@ -62,7 +62,7 @@ private:
         position_ += length;
     }
 
-    std::ifstream input_;
+    std::istream& input_;
     std::uint64_t size_ = 0;
     std::uint64_t limit_ = 0;
     std::uint64_t position_ = 0;
@@ -72,7 +72,13 @@ private:
 
 std::vector<ArchiveEntry> read_archive_index(const std::filesystem::path& path)
 {
-    IndexReader reader(path);
+    std::ifstream input(path, std::ios::binary);
+    return read_archive_index(input);
+}
+
+std::vector<ArchiveEntry> read_archive_index(std::istream& input)
+{
+    IndexReader reader(input);
     const auto data_offset = reader.big_endian<std::uint32_t>();
     reader.limit_to_index(data_offset);
     // The game's FUN_004e8370 checks both fields before reading the table.
@@ -87,6 +93,10 @@ std::vector<ArchiveEntry> read_archive_index(const std::filesystem::path& path)
     }
 
     std::vector<ArchiveEntry> entries;
+    if (count > entries.max_size()) {
+        throw std::runtime_error("GFS entry count exceeds capacity");
+    }
+    entries.reserve(static_cast<std::size_t>(count));
     std::uint64_t position = data_offset;
     for (std::uint64_t i = 0; i < count; ++i) {
         ArchiveEntry entry{};

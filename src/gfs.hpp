@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <iosfwd>
 #include <string>
 #include <vector>
 
@@ -15,5 +16,6 @@ struct ArchiveEntry {
 };
 
 std::vector<ArchiveEntry> read_archive_index(const std::filesystem::path& path);
+std::vector<ArchiveEntry> read_archive_index(std::istream& input);
 
 }

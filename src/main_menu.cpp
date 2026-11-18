@@ -2,7 +2,8 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <gdiplus.h>
-#include <d3d9.h>
+#include <d3d11.h>
+#include <d3dcompiler.h>
 #include <wrl/client.h>
 
 #include "sprite_asset.hpp"
@@ -20,6 +21,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <array>
 #include <stdexcept>
 #include <sstream>
@@ -46,22 +48,37 @@ struct Texture {
         if (dc) DeleteDC(dc);
     }
 
-    void load(const skullgirls::SpriteBytes& dds) {
-        const auto word = [&](std::size_t pos, unsigned length) {
-            unsigned value = 0;
-            for (unsigned i = 0; i < length; ++i) value |= unsigned(dds[pos + i]) << (8 * i);
-            return value;
-        };
-        if (dds.size() < 128 || word(0, 4) != 0x20534444 || (word(84, 4) != 0x35545844 && word(84, 4) != 0x31545844))
-            throw std::runtime_error("Expected a DXT1 or DXT5 menu texture");
-        const bool bc3 = word(84, 4) == 0x35545844;
-        const unsigned block_size = bc3 ? 16 : 8;
-        const auto w = word(16, 4), h = word(12, 4);
+    enum class Encoding { rgba, stage_rgb, straight_rgba };
+
+    struct DdsLayout {
+        unsigned width, height, block_size;
+    };
+
+    static unsigned word(const skullgirls::SpriteBytes& bytes, std::size_t pos, unsigned length) {
+        unsigned value = 0;
+        for (unsigned i = 0; i < length; ++i) value |= unsigned(bytes[pos + i]) << (8 * i);
+        return value;
+    }
+
+    static DdsLayout dds_layout(const skullgirls::SpriteBytes& dds) {
+        if (dds.size() < 128 || word(dds, 0, 4) != 0x20534444 ||
+            (word(dds, 84, 4) != 0x35545844 && word(dds, 84, 4) != 0x31545844))
+            throw std::runtime_error("Expected a DXT1 or DXT5 texture");
+        const unsigned block_size = word(dds, 84, 4) == 0x35545844 ? 16 : 8;
+        const auto w = word(dds, 16, 4), h = word(dds, 12, 4);
         if (!w || !h || w > 4096 || h > 4096 ||
             ((w + 3) / 4) * ((h + 3) / 4) > (dds.size() - 128) / block_size)
-            throw std::runtime_error("Truncated menu texture");
-        width = w;
-        height = h;
+            throw std::runtime_error("Truncated texture");
+        return {w, h, block_size};
+    }
+
+    void load(const skullgirls::SpriteBytes& dds, Encoding encoding = Encoding::rgba,
+              unsigned max_extent = 4096) {
+        const auto [w, h, block_size] = dds_layout(dds);
+        unsigned sample = 1;
+        while ((std::max(w, h) + sample - 1) / sample > max_extent) sample *= 2;
+        width = (w + sample - 1) / sample;
+        height = (h + sample - 1) / sample;
         BITMAPINFO info{};
         info.bmiHeader.biSize = sizeof(info.bmiHeader);
         info.bmiHeader.biWidth = width;
@@ -71,22 +88,31 @@ struct Texture {
         void* memory = nullptr;
         bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &memory, nullptr, 0);
         if (!bitmap) throw std::runtime_error("Cannot allocate menu texture");
-        auto* pixels = static_cast<unsigned*>(memory);
+        decode_dds(dds, {w, h, block_size}, encoding, sample, static_cast<unsigned*>(memory));
+    }
+
+    static void decode_dds(const skullgirls::SpriteBytes& dds, DdsLayout layout, Encoding encoding,
+                           unsigned sample, unsigned* pixels) {
+        const auto [w, h, block_size] = layout;
+        const bool bc3 = block_size == 16;
+        const auto stride = (w + sample - 1) / sample;
+        const auto read_word = [&](std::size_t pos, unsigned length) { return word(dds, pos, length); };
         std::size_t pos = 128;
         for (unsigned y = 0; y < h; y += 4) {
             for (unsigned x = 0; x < w; x += 4, pos += block_size) {
+                if (sample > 4 && (x % sample || y % sample)) continue;
                 unsigned alpha[8] = {dds[pos], dds[pos + 1]};
                 const auto levels = alpha[0] > alpha[1] ? 7u : 5u;
                 for (unsigned i = 1; i < levels; ++i)
                     alpha[i + 1] = ((levels - i) * alpha[0] + i * alpha[1]) / levels;
                 if (levels == 5) alpha[6] = 0, alpha[7] = 255;
-                const auto alpha_codes = bc3 ? word(pos + 2, 3) | (std::uint64_t(word(pos + 5, 3)) << 24) : 0;
+                const auto alpha_codes = bc3 ? read_word(pos + 2, 3) | (std::uint64_t(read_word(pos + 5, 3)) << 24) : 0;
                 const auto colors = pos + (bc3 ? 8 : 0);
-                const auto color_codes = word(colors + 4, 4);
-                const bool four_colors = bc3 || word(colors, 2) > word(colors + 2, 2);
+                const auto color_codes = read_word(colors + 4, 4);
+                const bool four_colors = bc3 || read_word(colors, 2) > read_word(colors + 2, 2);
                 unsigned color[4][3]{};
                 for (unsigned i = 0; i < 2; ++i) {
-                    const auto rgb = word(colors + i * 2, 2);
+                    const auto rgb = read_word(colors + i * 2, 2);
                     const auto b = rgb & 31, g = (rgb >> 5) & 63, r = rgb >> 11;
                     color[i][0] = (b << 3) | (b >> 2);
                     color[i][1] = (g << 2) | (g >> 4);
@@ -98,12 +124,19 @@ struct Texture {
                 }
                 for (unsigned i = 0; i < 16; ++i) {
                     const auto px = x + i % 4, py = y + i / 4;
-                    if (px >= w || py >= h) continue;
+                    if (px >= w || py >= h || px % sample || py % sample) continue;
+                    auto& pixel = pixels[(py / sample) * stride + px / sample];
                     const auto index = (color_codes >> (2 * i)) & 3;
                     const auto a = bc3 ? alpha[(alpha_codes >> (3 * i)) & 7] : (!four_colors && index == 3 ? 0u : 255u);
                     const auto& rgb = color[index];
-                    pixels[py * w + px] = (a << 24) | ((rgb[2] * a / 255) << 16)
-                        | ((rgb[1] * a / 255) << 8) | (rgb[0] * a / 255);
+                    if (encoding == Encoding::stage_rgb && bc3) {
+                        // Flat stage backgrounds use alpha, red and green as the three color channels.
+                        pixel = 0xff000000u | (a << 16) | (rgb[2] << 8) | rgb[1];
+                        continue;
+                    }
+                    const auto scale = encoding == Encoding::straight_rgba ? 255 : a;
+                    pixel = (a << 24) | ((rgb[2] * scale / 255) << 16)
+                        | ((rgb[1] * scale / 255) << 8) | (rgb[0] * scale / 255);
                 }
             }
         }
@@ -276,161 +309,300 @@ struct TiledAnimation {
 using Microsoft::WRL::ComPtr;
 
 struct StageGpu {
-    struct Vertex { float x, y, z, w; DWORD color; float u, v; };
+    struct Vertex { float x, y, z; std::uint32_t color; float u, v; };
     struct Mesh {
-        ComPtr<IDirect3DVertexBuffer9> vertices;
-        ComPtr<IDirect3DIndexBuffer9> indices;
-        ComPtr<IDirect3DTexture9> texture;
+        ComPtr<ID3D11Buffer> vertices, indices;
+        ComPtr<ID3D11ShaderResourceView> texture;
     };
-    ComPtr<IDirect3DDevice9> device;
-    ComPtr<IDirect3DSurface9> target, staging;
+    struct Constants {
+        float center, origin_y, distance, near_clip;
+        float horizontal, vertical, depth_scale, opaque;
+        float uv_u[4], uv_v[4];
+    };
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<ID3D11Texture2D> target, staging;
+    ComPtr<ID3D11RenderTargetView> target_view;
+    ComPtr<ID3D11DepthStencilView> depth_view;
+    ComPtr<ID3D11VertexShader> vertex_shader;
+    ComPtr<ID3D11PixelShader> pixel_shader;
+    ComPtr<ID3D11InputLayout> layout;
+    ComPtr<ID3D11Buffer> constants;
+    ComPtr<ID3D11RasterizerState> raster;
+    std::array<ComPtr<ID3D11DepthStencilState>, 2> depth_modes;
+    std::array<ComPtr<ID3D11BlendState>, 2> blend_modes;
+    std::array<ComPtr<ID3D11SamplerState>, 8> filters;
     std::vector<Mesh> buffers;
+    bool warp = false;
 
-    static void check(HRESULT result) {
-        if (FAILED(result)) throw std::runtime_error("Direct3D stage operation failed");
+    static void check(HRESULT result, const char* operation) {
+        if (FAILED(result))
+            throw std::runtime_error(std::string("Direct3D stage ") + operation + " failed (" +
+                                     std::to_string(static_cast<unsigned long>(result)) + ")");
     }
 
-    StageGpu(HWND window, int width, int height, const std::vector<skullgirls::StageMesh>& meshes,
-             const std::map<std::string, std::unique_ptr<Texture>>& textures) {
-        ComPtr<IDirect3D9> d3d;
-        d3d.Attach(Direct3DCreate9(D3D_SDK_VERSION));
-        if (!d3d) throw std::runtime_error("Direct3D 9 is unavailable");
-        D3DPRESENT_PARAMETERS params{};
-        params.Windowed = TRUE;
-        params.SwapEffect = D3DSWAPEFFECT_DISCARD;
-        params.BackBufferWidth = width;
-        params.BackBufferHeight = height;
-        params.BackBufferFormat = D3DFMT_X8R8G8B8;
-        params.EnableAutoDepthStencil = TRUE;
-        params.AutoDepthStencilFormat = D3DFMT_D24S8;
-        params.hDeviceWindow = window;
-        check(d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window,
-            D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE, &params, &device));
-        check(device->GetRenderTarget(0, &target));
-        check(device->CreateOffscreenPlainSurface(width, height, D3DFMT_X8R8G8B8,
-            D3DPOOL_SYSTEMMEM, &staging, nullptr));
+    static ComPtr<ID3DBlob> compile(const char* source, const char* entry, const char* version) {
+        ComPtr<ID3DBlob> bytes, errors;
+        const auto result = D3DCompile(source, std::strlen(source), nullptr, nullptr, nullptr, entry,
+            version, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &bytes, &errors);
+        if (FAILED(result) && errors) OutputDebugStringA(static_cast<const char*>(errors->GetBufferPointer()));
+        check(result, "shader compilation");
+        return bytes;
+    }
 
-        std::map<std::string, ComPtr<IDirect3DTexture9>> uploaded;
+    StageGpu(int width, int height, const std::vector<skullgirls::StageMesh>& meshes,
+             const std::map<std::string, skullgirls::SpriteBytes>& textures) {
+        auto result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &context);
+        if (FAILED(result)) {
+            warp = true;
+            result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &context);
+        }
+        check(result, "device creation");
+        D3D11_TEXTURE2D_DESC surface{};
+        surface.Width = width;
+        surface.Height = height;
+        surface.MipLevels = surface.ArraySize = surface.SampleDesc.Count = 1;
+        surface.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        surface.BindFlags = D3D11_BIND_RENDER_TARGET;
+        check(device->CreateTexture2D(&surface, nullptr, &target), "render target");
+        check(device->CreateRenderTargetView(target.Get(), nullptr, &target_view), "render target view");
+        surface.BindFlags = 0;
+        surface.Usage = D3D11_USAGE_STAGING;
+        surface.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        check(device->CreateTexture2D(&surface, nullptr, &staging), "readback texture");
+        surface.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+        surface.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+        surface.Usage = D3D11_USAGE_DEFAULT;
+        surface.CPUAccessFlags = 0;
+        ComPtr<ID3D11Texture2D> depth_buffer;
+        check(device->CreateTexture2D(&surface, nullptr, &depth_buffer), "depth buffer");
+        check(device->CreateDepthStencilView(depth_buffer.Get(), nullptr, &depth_view), "depth buffer view");
+
+        constexpr auto shader = R"(
+cbuffer Stage : register(b0) { float4 camera; float4 projection; float4 uv_u; float4 uv_v; };
+Texture2D surface : register(t0);
+SamplerState texture_filter : register(s0);
+struct Input { float3 p : POSITION; float4 color : COLOR; float2 uv : TEXCOORD; };
+struct Pixel { float4 p : SV_POSITION; float4 color : COLOR; float2 uv : TEXCOORD; };
+Pixel project(Input i) {
+    Pixel pixel;
+    float depth = camera.z - i.p.z;
+    pixel.p = float4((i.p.x - camera.x) * projection.x, (i.p.y - camera.y) * projection.y,
+                     (depth - camera.w) * projection.z, depth);
+    pixel.color = i.color;
+    float3 uv = float3(i.uv, 1);
+    pixel.uv = float2(dot(uv, uv_u.xyz), 1 - dot(uv, uv_v.xyz));
+    return pixel;
+}
+float4 shade(Pixel i) : SV_TARGET {
+    float4 color = surface.Sample(texture_filter, i.uv) * i.color;
+    if (projection.w > 0) clip(color.a - 0.9999);
+    else {
+        clip(0.9999 - color.a);
+        clip(color.a - 0.0001);
+    }
+    return color;
+}
+)";
+        const auto vs = compile(shader, "project", "vs_4_0");
+        const auto ps = compile(shader, "shade", "ps_4_0");
+        check(device->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &vertex_shader),
+              "vertex shader");
+        check(device->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &pixel_shader),
+              "pixel shader");
+        constexpr D3D11_INPUT_ELEMENT_DESC inputs[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+            {"COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
+            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        };
+        check(device->CreateInputLayout(inputs, static_cast<UINT>(std::size(inputs)),
+            vs->GetBufferPointer(), vs->GetBufferSize(), &layout), "vertex layout");
+        D3D11_BUFFER_DESC constant_spec{};
+        constant_spec.ByteWidth = sizeof(Constants);
+        constant_spec.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        check(device->CreateBuffer(&constant_spec, nullptr, &constants), "constants");
+        D3D11_RASTERIZER_DESC raster_spec{};
+        raster_spec.FillMode = D3D11_FILL_SOLID;
+        raster_spec.CullMode = D3D11_CULL_NONE;
+        raster_spec.DepthClipEnable = true;
+        check(device->CreateRasterizerState(&raster_spec, &raster), "rasterizer");
+        for (std::size_t mode = 0; mode < depth_modes.size(); ++mode) {
+            D3D11_DEPTH_STENCIL_DESC depth_spec{};
+            depth_spec.DepthEnable = true;
+            depth_spec.DepthWriteMask = mode ? D3D11_DEPTH_WRITE_MASK_ALL : D3D11_DEPTH_WRITE_MASK_ZERO;
+            depth_spec.DepthFunc = D3D11_COMPARISON_LESS;
+            check(device->CreateDepthStencilState(&depth_spec, &depth_modes[mode]), "depth state");
+            D3D11_BLEND_DESC blend_spec{};
+            auto& blend = blend_spec.RenderTarget[0];
+            blend.BlendEnable = mode == 0;
+            blend.SrcBlend = D3D11_BLEND_SRC_ALPHA;
+            blend.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+            blend.BlendOp = D3D11_BLEND_OP_ADD;
+            blend.SrcBlendAlpha = D3D11_BLEND_ONE;
+            blend.DestBlendAlpha = D3D11_BLEND_ZERO;
+            blend.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+            blend.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN |
+                                          D3D11_COLOR_WRITE_ENABLE_BLUE;
+            check(device->CreateBlendState(&blend_spec, &blend_modes[mode]), "blend state");
+        }
+        for (unsigned mode = 0; mode < filters.size(); ++mode) {
+            D3D11_SAMPLER_DESC sampler{};
+            sampler.Filter = (mode & 1) ? D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT : D3D11_FILTER_MIN_MAG_MIP_POINT;
+            sampler.AddressU = (mode & 2) ? D3D11_TEXTURE_ADDRESS_WRAP : D3D11_TEXTURE_ADDRESS_CLAMP;
+            sampler.AddressV = (mode & 4) ? D3D11_TEXTURE_ADDRESS_WRAP : D3D11_TEXTURE_ADDRESS_CLAMP;
+            sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+            sampler.ComparisonFunc = D3D11_COMPARISON_NEVER;
+            sampler.MaxLOD = D3D11_FLOAT32_MAX;
+            check(device->CreateSamplerState(&sampler, &filters[mode]), "texture sampler");
+        }
+
+        const auto upload = [&](const void* data, UINT size, UINT binding) {
+            D3D11_BUFFER_DESC desc{};
+            desc.ByteWidth = size;
+            desc.BindFlags = binding;
+            desc.Usage = D3D11_USAGE_IMMUTABLE;
+            const D3D11_SUBRESOURCE_DATA initial{data, 0, 0};
+            ComPtr<ID3D11Buffer> buffer;
+            check(device->CreateBuffer(&desc, &initial, &buffer), "geometry upload");
+            return buffer;
+        };
+        std::map<std::string, ComPtr<ID3D11ShaderResourceView>> uploaded;
         for (const auto& mesh : meshes) {
-            Mesh buffer;
-            const auto& source = *textures.at(mesh.material);
             auto& texture = uploaded[mesh.material];
             if (!texture) {
-                check(device->CreateTexture(source.width, source.height, 1, 0, D3DFMT_A8R8G8B8,
-                    D3DPOOL_MANAGED, &texture, nullptr));
-                DIBSECTION dib{};
-                if (!GetObjectW(source.bitmap, sizeof(dib), &dib))
-                    throw std::runtime_error("Cannot read stage texture pixels");
-                D3DLOCKED_RECT lock{};
-                check(texture->LockRect(0, &lock, nullptr, 0));
-                for (int y = 0; y < source.height; ++y)
-                    std::memcpy(static_cast<BYTE*>(lock.pBits) + y * lock.Pitch,
-                        static_cast<const BYTE*>(dib.dsBm.bmBits) + y * dib.dsBm.bmWidthBytes,
-                        source.width * 4);
-                check(texture->UnlockRect(0));
+                const auto& source = textures.at(mesh.material);
+                const auto layout = Texture::dds_layout(source);
+                const auto [w, h, block_size] = layout;
+                D3D11_TEXTURE2D_DESC desc{};
+                desc.Width = w;
+                desc.Height = h;
+                desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+                desc.Format = block_size == 16 ? DXGI_FORMAT_BC3_UNORM : DXGI_FORMAT_BC1_UNORM;
+                desc.Usage = D3D11_USAGE_IMMUTABLE;
+                desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                D3D11_SUBRESOURCE_DATA initial{source.data() + 128, ((w + 3) / 4) * block_size, 0};
+                std::vector<unsigned> decoded;
+                // Direct3D requires block-aligned dimensions for BC textures.
+                if (w % 4 || h % 4) {
+                    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+                    decoded.resize(w * h);
+                    Texture::decode_dds(source, layout, Texture::Encoding::straight_rgba, 1, decoded.data());
+                    initial = {decoded.data(), w * sizeof(unsigned), 0};
+                }
+                ComPtr<ID3D11Texture2D> resource;
+                check(device->CreateTexture2D(&desc, &initial, &resource), "texture upload");
+                check(device->CreateShaderResourceView(resource.Get(), nullptr, &texture), "texture view");
             }
-            buffer.texture = texture;
-            check(device->CreateVertexBuffer(static_cast<UINT>(mesh.vertices.size() * sizeof(Vertex)),
-                D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1,
-                D3DPOOL_DEFAULT, &buffer.vertices, nullptr));
-            check(device->CreateIndexBuffer(static_cast<UINT>(mesh.indices.size() * sizeof(unsigned)),
-                D3DUSAGE_WRITEONLY, D3DFMT_INDEX32, D3DPOOL_MANAGED, &buffer.indices, nullptr));
-            void* index_data = nullptr;
-            check(buffer.indices->Lock(0, 0, &index_data, 0));
-            std::memcpy(index_data, mesh.indices.data(), mesh.indices.size() * sizeof(unsigned));
-            check(buffer.indices->Unlock());
-            buffers.push_back(std::move(buffer));
+            std::vector<Vertex> vertices;
+            vertices.reserve(mesh.vertices.size());
+            for (const auto& v : mesh.vertices) {
+                const auto rgba = (v.rgba >> 24) | ((v.rgba >> 8) & 0xff00u) |
+                    ((v.rgba << 8) & 0xff0000u) | (v.rgba << 24);
+                vertices.push_back({v.x, v.y, v.z, rgba, v.u, v.v});
+            }
+            buffers.push_back({
+                upload(vertices.data(), static_cast<UINT>(vertices.size() * sizeof(Vertex)), D3D11_BIND_VERTEX_BUFFER),
+                upload(mesh.indices.data(), static_cast<UINT>(mesh.indices.size() * sizeof(unsigned)), D3D11_BIND_INDEX_BUFFER),
+                texture,
+            });
         }
     }
 
     void draw(int width, int height, const std::vector<skullgirls::StageMesh>& meshes,
-              const std::vector<std::array<float, 2>>& uv, float center, float view_height,
+              const std::vector<skullgirls::StageUv>& uv, float center, float view_height,
               float bottom, float distance, float focal, float near_clip, float far_clip,
               std::vector<unsigned>& color) {
-        check(device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xffaeb9c7, 1.0f, 0));
-        check(device->BeginScene());
-        device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
-        device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-        device->SetRenderState(D3DRS_ZENABLE, TRUE);
-        device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESS);
-        device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
-        device->SetRenderState(D3DRS_ALPHAREF, 255);
-        device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);
-        device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-        device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-        device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-        device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
-        for (std::size_t i = 0; i < meshes.size(); ++i) {
-            const auto& mesh = meshes[i];
-            const auto& buffer = buffers[i];
-            void* data = nullptr;
-            check(buffer.vertices->Lock(0, 0, &data, D3DLOCK_DISCARD));
-            auto* vertex = static_cast<Vertex*>(data);
-            for (const auto& v : mesh.vertices) {
-                const float z = distance - v.z;
-                const float q = 1.0f / std::max(z, near_clip);
-                const unsigned a = v.rgba & 255;
-                const auto premultiply = [a](unsigned c) { return (c & 255) * a / 255; };
-                *vertex++ = {width * 0.5f + (v.x - center) * focal * q - 0.5f,
-                    height * 0.5f - (v.y - bottom - view_height * 0.5f) * focal * q - 0.5f,
-                    (z - near_clip) / (far_clip - near_clip), q,
-                    D3DCOLOR_ARGB(a, premultiply(v.rgba >> 24), premultiply(v.rgba >> 16),
-                                  premultiply(v.rgba >> 8)), v.u + uv[i][0], 1.0f - v.v - uv[i][1]};
-            }
-            check(buffer.vertices->Unlock());
-            device->SetTexture(0, buffer.texture.Get());
-            const auto filter = mesh.uv_offsets.empty() ? D3DTEXF_POINT : D3DTEXF_LINEAR;
-            device->SetSamplerState(0, D3DSAMP_MINFILTER, filter);
-            device->SetSamplerState(0, D3DSAMP_MAGFILTER, filter);
-            device->SetStreamSource(0, buffer.vertices.Get(), 0, sizeof(Vertex));
-            device->SetIndices(buffer.indices.Get());
-            for (bool opaque : {true, false}) {
-                device->SetRenderState(D3DRS_ALPHAFUNC, opaque ? D3DCMP_EQUAL : D3DCMP_LESS);
-                device->SetRenderState(D3DRS_ALPHABLENDENABLE, !opaque);
-                device->SetRenderState(D3DRS_ZWRITEENABLE, opaque);
-                check(device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
-                    static_cast<UINT>(mesh.vertices.size()), 0, static_cast<UINT>(mesh.indices.size() / 3)));
+        constexpr float clear[] = {174.0f / 255, 185.0f / 255, 199.0f / 255, 1.0f};
+        context->ClearRenderTargetView(target_view.Get(), clear);
+        context->ClearDepthStencilView(depth_view.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+        context->OMSetRenderTargets(1, target_view.GetAddressOf(), depth_view.Get());
+        const D3D11_VIEWPORT viewport{0, 0, static_cast<float>(width), static_cast<float>(height), 0, 1};
+        context->RSSetViewports(1, &viewport);
+        context->RSSetState(raster.Get());
+        context->IASetInputLayout(layout.Get());
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(vertex_shader.Get(), nullptr, 0);
+        context->PSSetShader(pixel_shader.Get(), nullptr, 0);
+        context->VSSetConstantBuffers(0, 1, constants.GetAddressOf());
+        context->PSSetConstantBuffers(0, 1, constants.GetAddressOf());
+        Constants transform{center, bottom + view_height * 0.5f, distance, near_clip,
+            2 * focal / width, 2 * focal / height, far_clip / (far_clip - near_clip), 0, {}, {}};
+        constexpr UINT stride = sizeof(Vertex), offset = 0;
+        for (bool opaque : {true, false}) {
+            context->OMSetDepthStencilState(depth_modes[opaque].Get(), 0);
+            context->OMSetBlendState(blend_modes[opaque].Get(), nullptr, 0xffffffff);
+            transform.opaque = opaque ? 1.0f : 0.0f;
+            for (std::size_t i = 0; i < meshes.size(); ++i) {
+                const auto& mesh = meshes[i];
+                const auto& buffer = buffers[i];
+                std::copy_n(uv[i].begin(), 3, transform.uv_u);
+                std::copy_n(uv[i].begin() + 3, 3, transform.uv_v);
+                context->UpdateSubresource(constants.Get(), 0, nullptr, &transform, 0, 0);
+                const unsigned filter = unsigned(mesh.animates_uv()) | (unsigned(mesh.wrap_u) << 1) |
+                    (unsigned(mesh.wrap_v) << 2);
+                context->PSSetSamplers(0, 1, filters[filter].GetAddressOf());
+                context->PSSetShaderResources(0, 1, buffer.texture.GetAddressOf());
+                context->IASetVertexBuffers(0, 1, buffer.vertices.GetAddressOf(), &stride, &offset);
+                context->IASetIndexBuffer(buffer.indices.Get(), DXGI_FORMAT_R32_UINT, 0);
+                context->DrawIndexed(static_cast<UINT>(mesh.indices.size()), 0, 0);
             }
         }
-        check(device->EndScene());
-        check(device->GetRenderTargetData(target.Get(), staging.Get()));
-        D3DLOCKED_RECT lock{};
-        check(staging->LockRect(&lock, nullptr, D3DLOCK_READONLY));
+        context->CopyResource(staging.Get(), target.Get());
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        check(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "frame readback");
         for (int y = 0; y < height; ++y) {
-            const auto* row = reinterpret_cast<const unsigned*>(static_cast<const BYTE*>(lock.pBits) + y * lock.Pitch);
-            for (int x = 0; x < width; ++x) color[y * width + x] = row[x] | 0xff000000;
+            const auto* row = static_cast<const BYTE*>(mapped.pData) + y * mapped.RowPitch;
+            std::memcpy(color.data() + y * width, row, width * sizeof(unsigned));
         }
-        check(staging->UnlockRect());
+        context->Unmap(staging.Get(), 0);
     }
 };
 
 struct PracticeScene {
-    static constexpr int width = 960, height = 540;
+    static constexpr int width = 1280, height = 720;
+    static constexpr int software_width = 480, software_height = 270;
     struct ProjectedVertex { float x, y, q, u, v; unsigned rgba; };
     std::vector<skullgirls::StageMesh> meshes;
     std::vector<ProjectedVertex> points;
-    std::vector<std::array<float, 2>> drawn_uv, current_uv;
+    std::vector<skullgirls::StageUv> drawn_uv, current_uv;
     std::array<float, 4> drawn_camera{};
     bool has_drawn = false;
     std::unique_ptr<StageGpu> gpu;
+    std::map<std::string, skullgirls::SpriteBytes> texture_data;
     std::map<std::string, std::unique_ptr<Texture>> textures;
     std::vector<unsigned> color = std::vector<unsigned>(width * height);
-    std::vector<float> depth = std::vector<float>(width * height);
+    std::vector<float> depth = std::vector<float>(software_width * software_height);
     Gdiplus::Bitmap image{width, height, width * 4, PixelFormat32bppPARGB,
                           reinterpret_cast<BYTE*>(color.data())};
+    Gdiplus::Bitmap software_image{software_width, software_height, software_width * 4,
+                                   PixelFormat32bppPARGB, reinterpret_cast<BYTE*>(color.data())};
     float fov = 0, near_clip = 0, far_clip = 0;
 
     PracticeScene(const std::filesystem::path& directory, const std::string& level,
                   float stage_width, float stage_height, float floor,
                   float field_of_view, float near_plane, float far_plane)
-        : meshes(skullgirls::read_stage_scene(directory / "stages.gfs", level, stage_width, stage_height, floor)),
+        : PracticeScene(directory, skullgirls::read_stage_scene(directory / "stages.gfs", level,
+                                                               stage_width, stage_height, floor),
+                        field_of_view, near_plane, far_plane) {}
+
+    PracticeScene(const std::filesystem::path& directory, std::vector<skullgirls::StageMesh> stage_meshes,
+                  float field_of_view, float near_plane, float far_plane, const std::string& texture_subpath = {},
+                  const std::map<std::string, std::string>& replacements = {})
+        : meshes(std::move(stage_meshes)),
           fov(field_of_view), near_clip(near_plane), far_clip(far_plane) {
+        skullgirls::SpriteArchive stage_textures(directory / "stages-textures.gfs");
         for (const auto& mesh : meshes) {
-            if (textures.find(mesh.material) != textures.end()) continue;
-            auto texture = std::make_unique<Texture>();
-            texture->load(skullgirls::read_sprite_asset(directory / "stages-textures.gfs",
-                                                        "stages/textures/" + mesh.material + ".dds"));
-            textures.emplace(mesh.material, std::move(texture));
+            if (texture_data.find(mesh.material) != texture_data.end()) continue;
+            const auto replacement = replacements.find(mesh.material);
+            const auto& material = replacement != replacements.end() ? replacement->second : mesh.material;
+            const auto filename = material + ".dds";
+            auto override_texture = texture_subpath.empty() ? std::nullopt :
+                stage_textures.read_if_present("stages/textures/" + texture_subpath + "/" + filename);
+            auto bytes = override_texture ? std::move(*override_texture) : stage_textures.read("stages/textures/" + filename);
+            Texture::dds_layout(bytes);
+            texture_data.emplace(mesh.material, std::move(bytes));
         }
         // Draw the classroom before its translucent fog and character layers.
         std::stable_partition(meshes.begin(), meshes.end(),
@@ -441,36 +613,43 @@ struct PracticeScene {
         current_uv.resize(meshes.size());
     }
 
-    void initialize_gpu(HWND window) {
+    void initialize_gpu(HWND) {
         try {
-            gpu = std::make_unique<StageGpu>(window, width, height, meshes, textures);
-        } catch (const std::runtime_error&) {
-            OutputDebugStringW(L"Class Notes Direct3D initialization failed. Using software rendering.\n");
+            gpu = std::make_unique<StageGpu>(width, height, meshes, texture_data);
+        } catch (const std::runtime_error& error) {
+            OutputDebugStringA(error.what());
+            OutputDebugStringA(". Using software stage rendering.\n");
+            prepare_software_textures();
         }
+    }
+
+    void prepare_software_textures() {
+        if (textures.size() == texture_data.size()) return;
+        std::map<std::string, std::unique_ptr<Texture>> decoded;
+        for (const auto& [name, bytes] : texture_data) {
+            auto texture = std::make_unique<Texture>();
+            texture->load(bytes, Texture::Encoding::rgba, 1024);
+            decoded.emplace(name, std::move(texture));
+        }
+        textures = std::move(decoded);
     }
 
     void draw(Gdiplus::Graphics& target, float center, float view_width, float view_height, float bottom,
               std::uint64_t tick) {
         const std::array<float, 4> camera{center, view_width, view_height, bottom};
-        for (std::size_t i = 0; i < meshes.size(); ++i) {
-            const auto& mesh = meshes[i];
-            if (tick < mesh.intro_uv_offsets.size()) {
-                current_uv[i] = mesh.intro_uv_offsets[tick];
-            } else if (!mesh.uv_offsets.empty()) {
-                current_uv[i] = mesh.uv_offsets[(tick - mesh.intro_uv_offsets.size()) % mesh.uv_offsets.size()];
-            } else {
-                current_uv[i] = {};
-            }
-        }
+        const double seconds = tick / 60.0;
+        for (std::size_t i = 0; i < meshes.size(); ++i)
+            current_uv[i] = meshes[i].uv_at(seconds);
         if (!has_drawn || camera != drawn_camera || current_uv != drawn_uv) {
             if (gpu) {
                 const float distance = view_width * 0.5f / std::tan(fov * 0.00872664626f);
                 try {
                     gpu->draw(width, height, meshes, current_uv, center, view_height, bottom,
                               distance, width * distance / view_width, near_clip, far_clip, color);
-                } catch (const std::runtime_error&) {
+                } catch (const std::runtime_error& error) {
                     gpu.reset();
-                    OutputDebugStringW(L"Class Notes Direct3D rendering failed. Using software rendering.\n");
+                    OutputDebugStringA(error.what());
+                    OutputDebugStringA(". Using software stage rendering.\n");
                 }
             }
             if (!gpu) rasterize(center, view_width, view_height, bottom);
@@ -478,12 +657,17 @@ struct PracticeScene {
             drawn_uv.swap(current_uv);
             has_drawn = true;
         }
-        target.DrawImage(&image, 0, 0, 1280, 720);
+        const auto composition = target.GetCompositingMode();
+        target.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+        target.DrawImage(gpu ? &image : &software_image, 0, 0, width, height);
+        target.SetCompositingMode(composition);
     }
 
     void rasterize(float center, float view_width, float view_height, float bottom) {
-        std::fill(color.begin(), color.end(), 0xffaeb9c7);
-        std::fill(depth.begin(), depth.end(), 0.0f);
+        prepare_software_textures();
+        constexpr int width = software_width, height = software_height;
+        std::fill_n(color.begin(), width * height, 0xffaeb9c7);
+        std::fill_n(depth.begin(), width * height, 0.0f);
         const float distance = view_width * 0.5f / std::tan(fov * 0.00872664626f);
         const float focal = width * distance / view_width;
         const auto edge = [](const ProjectedVertex& a, const ProjectedVertex& b, float x, float y) {
@@ -497,12 +681,21 @@ struct PracticeScene {
             const auto* texels = static_cast<const unsigned*>(dib.dsBm.bmBits);
             points.clear();
             const auto& uv = current_uv[mesh_index];
+            const bool animated = mesh.animates_uv();
+            const auto coordinate = [](float value, int size, bool wrap) {
+                value = wrap ? value - std::floor(value) : std::clamp(value, 0.0f, 1.0f);
+                return value * size - 0.5f;
+            };
+            const auto index = [](int value, int size, bool wrap) {
+                return wrap ? (value + size) % size : std::clamp(value, 0, size - 1);
+            };
             for (const auto& v : mesh.vertices) {
                 const float z = distance - v.z;
                 const float q = z >= near_clip && z <= far_clip ? 1.0f / z : 0.0f;
                 points.push_back({width * 0.5f + (v.x - center) * focal * q,
                     height * 0.5f - (v.y - bottom - view_height * 0.5f) * focal * q, q,
-                    (v.u + uv[0]) * q, (v.v + uv[1]) * q, v.rgba});
+                    (uv[0] * v.u + uv[1] * v.v + uv[2]) * q,
+                    (uv[3] * v.u + uv[4] * v.v + uv[5]) * q, v.rgba});
             }
             for (std::size_t i = 0; i < mesh.indices.size(); i += 3) {
                 const auto& a = points[mesh.indices[i]];
@@ -527,17 +720,20 @@ struct PracticeScene {
                         if (q <= depth[pixel]) continue;
                         const float u = (a.u * wa + b.u * wb + c.u * wc) / q;
                         const float v = (a.v * wa + b.v * wb + c.v * wc) / q;
-                        const float tx = std::clamp(u * texture.width - 0.5f, 0.0f, float(texture.width - 1));
-                        const float ty = std::clamp((1 - v) * texture.height - 0.5f, 0.0f, float(texture.height - 1));
-                        const int x0 = static_cast<int>(tx), y0 = static_cast<int>(ty);
+                        const float tx = coordinate(u, texture.width, mesh.wrap_u);
+                        const float ty = coordinate(1 - v, texture.height, mesh.wrap_v);
+                        const int texel_x = static_cast<int>(std::floor(tx + (animated ? 0.0f : 0.5f)));
+                        const int texel_y = static_cast<int>(std::floor(ty + (animated ? 0.0f : 0.5f)));
+                        const int x0 = index(texel_x, texture.width, mesh.wrap_u);
+                        const int y0 = index(texel_y, texture.height, mesh.wrap_v);
                         unsigned texel = texels[y0 * texture.width + x0];
-                        if (!mesh.uv_offsets.empty()) {
-                            const int x1 = std::min(x0 + 1, texture.width - 1);
-                            const int y1 = std::min(y0 + 1, texture.height - 1);
+                        if (animated) {
+                            const int x1 = index(texel_x + 1, texture.width, mesh.wrap_u);
+                            const int y1 = index(texel_y + 1, texture.height, mesh.wrap_v);
                             const auto tr = texels[y0 * texture.width + x1];
                             const auto bl = texels[y1 * texture.width + x0];
                             const auto br = texels[y1 * texture.width + x1];
-                            const float fx = tx - x0, fy = ty - y0;
+                            const float fx = tx - texel_x, fy = ty - texel_y;
                             unsigned filtered = 0;
                             for (unsigned shift = 0; shift < 32; shift += 8) {
                                 const float top = ((texel >> shift) & 255) * (1 - fx) + ((tr >> shift) & 255) * fx;
@@ -1792,32 +1988,102 @@ struct Menu {
         load_movement_frames();
         prepare_practice_bitmaps();
         prepare_hud_portraits();
-        const auto config = skullgirls::read_sprite_asset(game_data / "stages.gfs", "stages/" + current_stage().level + ".lvl");
+        skullgirls::SpriteArchive stages_archive(game_data / "stages.gfs");
+        const auto& level = current_stage().level;
+        const auto config = stages_archive.read("stages/" + level + ".lvl");
         std::istringstream stream(std::string(config.begin(), config.end()));
-        std::string background_asset;
-        float fov = 0, near_plane = 0, far_plane = 0;
+        std::string background_asset, texture_subpath, world = level;
+        std::map<std::string, std::string> replacements;
+        unsigned replacement_index = 0;
+        bool replace_ignore_first = false;
+        float width = 0, height = 0, floor = 0;
+        decltype(practice_starts) starts{};
+        float fov = 66, near_plane = 200, far_plane = 24000;
         for (std::string line; std::getline(stream, line);) {
+            const auto comment = line.find('#');
+            if (comment != std::string::npos) line.resize(comment);
             std::istringstream row(line);
             std::string key;
             row >> key;
-            if (key == "StageSize:") row >> practice_width >> practice_height;
-            else if (key == "BottomClearance:") row >> practice_floor;
-            else if (key == "Start1:") row >> practice_starts[0];
-            else if (key == "Start2:") row >> practice_starts[1];
+            if (key == "StageSize:") row >> width >> height;
+            else if (key == "BottomClearance:") row >> floor;
+            else if (key == "Start1:") row >> starts[0];
+            else if (key == "Start2:") row >> starts[1];
             else if (key == "2D") row >> background_asset;
-            else if (key == "CAMERA") row >> fov >> near_plane >> far_plane;
+            else if (key == "OverrideWorldName") row >> world;
+            else if (key == "TextureSubpath") row >> texture_subpath;
+            else if (key == "ForceReplace") row >> replacement_index;
+            else if (key == "ReplaceIgnoreFirst") replace_ignore_first = true;
+            else if (key == "ReplaceNumIfChar") {
+                std::string character;
+                unsigned index;
+                if (!(row >> character >> index)) continue;
+                for (const auto& team : fighters) {
+                    if (std::any_of(team.begin(), team.end(),
+                            [&](int fighter) { return _stricmp(roster[fighter], character.c_str()) == 0; }))
+                        replacement_index = index;
+                }
+            } else if (key == "Replace") {
+                std::string material, replacement;
+                if (!(row >> material)) continue;
+                if (replace_ignore_first || replacement_index > 0) {
+                    const unsigned index = replace_ignore_first ? replacement_index : replacement_index - 1;
+                    for (unsigned i = 0; i <= index && row >> replacement; ++i) {
+                        if (i == index) replacements[material] = replacement;
+                    }
+                }
+            } else if (key == "CharReplace") {
+                std::string material, replacement;
+                unsigned team, slot;
+                if (!(row >> material >> team >> slot >> replacement) ||
+                    !team || team > fighters.size() || !slot || slot > fighters[team - 1].size()) continue;
+                const auto marker = replacement.find("[NAME]");
+                if (marker != std::string::npos) replacement.replace(marker, 6, roster[fighters[team - 1][slot - 1]]);
+                replacements[material] = std::move(replacement);
+            } else if (key == "CAMERA") {
+                row >> fov;
+                float near_value, far_value;
+                if (row >> near_value) near_plane = near_value;
+                if (row >> far_value) far_plane = far_value;
+            }
         }
-        if (background_asset.empty() || practice_width < 1600 || practice_height < 900)
+        if (!std::isfinite(width) || !std::isfinite(height) || width < 1600 || height < 900)
             throw std::runtime_error("Invalid training stage layout");
         std::unique_ptr<Texture> backdrop;
         std::unique_ptr<PracticeScene> scene;
-        if (current_stage().level == "class_notes_3d" && fov > 0 && near_plane > 0 && far_plane > near_plane) {
-            scene = std::make_unique<PracticeScene>(game_data, current_stage().level, practice_width,
-                practice_height, practice_floor, fov, near_plane, far_plane);
-        } else {
-            backdrop = std::make_unique<Texture>();
-            backdrop->load(skullgirls::read_sprite_asset(game_data / "stages-textures2d.gfs", background_asset));
+        const auto scene_name = "stages/" + world + "/background.sgi.msb";
+        const auto& entries = stages_archive.entries();
+        const bool has_scene = std::any_of(entries.begin(), entries.end(),
+            [&](const auto& entry) { return entry.name == scene_name; });
+        // Their bind poses leave scenery out of place without the joint animations.
+        const bool draw_scene = has_scene && level != "medici_office_3d" &&
+            level != "training_3d" && level != "boardwalk_3d";
+        if (draw_scene && fov > 0 && fov < 180 && near_plane > 0 && far_plane > near_plane) {
+            try {
+                auto meshes = skullgirls::read_stage_scene(stages_archive, world, width, height, floor);
+                if (meshes.empty()) throw std::runtime_error("Training stage contains no drawable scenery");
+                scene = std::make_unique<PracticeScene>(game_data, std::move(meshes), fov, near_plane, far_plane,
+                                                        texture_subpath, replacements);
+            } catch (const std::runtime_error& error) {
+                if (background_asset.empty()) throw;
+                OutputDebugStringA(error.what());
+                OutputDebugStringA(". Using the flat stage background.\n");
+            }
         }
+        if (!scene) {
+            if (background_asset.empty()) throw std::runtime_error("Training stage has no supported background");
+            const std::filesystem::path path(background_asset);
+            const auto replacement = replacements.find(path.stem().string());
+            if (replacement != replacements.end())
+                background_asset = (path.parent_path() / (replacement->second + path.extension().string())).generic_string();
+            backdrop = std::make_unique<Texture>();
+            backdrop->load(skullgirls::read_sprite_asset(game_data / "stages-textures2d.gfs", background_asset),
+                           Texture::Encoding::stage_rgb);
+        }
+        practice_width = width;
+        practice_height = height;
+        practice_floor = floor;
+        practice_starts = starts;
         practice_scene = std::move(scene);
         practice_background = std::move(backdrop);
     }
@@ -3284,8 +3550,7 @@ struct Menu {
                     stage_variant = vertical < 0 ? (stage_variant + count - 1) % count
                                                  : (stage_variant + 1) % count;
                 } else if (accept || key == VK_RETURN) {
-                    if (current_stage().level == "class_notes_3d" &&
-                        std::string_view(roster[fighters[0].front()]) == "filia") {
+                    if (std::string_view(roster[fighters[0].front()]) == "filia") {
                         start_practice();
                     } else {
                         training = TrainingView::stage_confirmed;

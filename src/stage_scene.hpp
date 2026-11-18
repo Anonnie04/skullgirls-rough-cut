@@ -14,9 +14,15 @@ class StageReader {
     std::size_t offset_ = 0;
 public:
     explicit StageReader(const SpriteBytes& bytes) : bytes_(bytes) {}
+    std::size_t remaining() const { return bytes_.size() - offset_; }
     void skip(std::size_t size) {
-        if (size > bytes_.size() - offset_) throw std::runtime_error("Truncated stage asset");
+        if (size > remaining()) throw std::runtime_error("Truncated stage asset");
         offset_ += size;
+    }
+    std::size_t count(unsigned stride) {
+        const auto size = word(8);
+        if (size > remaining() / stride) throw std::runtime_error("Invalid stage array length");
+        return static_cast<std::size_t>(size);
     }
     std::uint64_t word(unsigned size) {
         const auto start = offset_;
@@ -44,32 +50,97 @@ struct StageVertex {
     float x, y, z, u, v;
     unsigned rgba;
 };
+
+// Row-major affine UV transform, with translation in the last column.
+using StageUv = std::array<float, 6>;
+inline constexpr StageUv identity_stage_uv{1, 0, 0, 0, 1, 0};
+
+struct StageUvClip {
+    struct Sample { float sx, sy, rotation, u, v; };
+    float seconds = 0;
+    std::uint32_t discrete_frames = 0;
+    std::vector<Sample> samples;
+
+    StageUv sample(double elapsed) const {
+        double phase = std::clamp(elapsed / seconds, 0.0, 1.0);
+        if (discrete_frames > 1)
+            phase = std::min(1.0, std::floor(phase * discrete_frames) / (discrete_frames - 1));
+        const double frame = phase * (samples.size() - 1);
+        const auto i = static_cast<std::size_t>(frame);
+        const auto& a = samples[i];
+        const auto& b = samples[std::min(i + 1, samples.size() - 1)];
+        const auto lerp = [t = static_cast<float>(frame - i)](float start, float end) {
+            return start + t * (end - start);
+        };
+        const float angle = lerp(a.rotation, b.rotation);
+        const float c = std::cos(angle), s = std::sin(angle);
+        const float sx = lerp(a.sx, b.sx), sy = lerp(a.sy, b.sy);
+        return {c * sx, -s * sy, lerp(a.u, b.u), s * sx, c * sy, lerp(a.v, b.v)};
+    }
+
+    bool scrolls(unsigned axis) const {
+        if (discrete_frames > 1 || samples.empty()) return false;
+        const auto& first = samples.front();
+        const auto& last = samples.back();
+        const float span = axis == 0 ? last.u - first.u : last.v - first.v;
+        return std::abs(span) >= 0.999f;
+    }
+};
+
 struct StageMesh {
     std::string material;
     std::vector<StageVertex> vertices;
     std::vector<unsigned> indices;
-    std::vector<std::array<float, 2>> uv_offsets;
-    std::vector<std::array<float, 2>> intro_uv_offsets;
+    StageUvClip idle_uv, intro_uv;
+    bool wrap_u = false, wrap_v = false;
+
+    bool animates_uv() const { return !idle_uv.samples.empty() || !intro_uv.samples.empty(); }
+    StageUv uv_at(double seconds) const {
+        if (seconds < intro_uv.seconds) return intro_uv.sample(seconds);
+        if (idle_uv.samples.empty())
+            return intro_uv.samples.empty() ? identity_stage_uv : intro_uv.sample(intro_uv.seconds);
+        return idle_uv.sample(std::fmod(seconds - intro_uv.seconds, idle_uv.seconds));
+    }
 };
 
-inline std::vector<std::array<float, 2>> read_stage_uv_offsets(const SpriteBytes& bytes) {
+inline StageUvClip read_stage_uv_clip(const SpriteBytes& bytes) {
     StageReader reader(bytes);
-    if (reader.string() != "3.0") throw std::runtime_error("Unsupported stage animation version");
-    const auto frames = reader.word(4);
-    reader.skip(16);
-    reader.real();
-    if (reader.string() != "uv_track")
-        throw std::runtime_error("Unsupported stage UV track");
-    if (!frames || frames > bytes.size() / 20 || reader.word(8) != frames)
-        throw std::runtime_error("Invalid stage UV track length");
-    // Two scale channels and a rotation channel precede the UV translations.
-    reader.skip(static_cast<std::size_t>(frames) * 8);
-    if (reader.word(8) != frames) throw std::runtime_error("Invalid stage rotation track");
-    reader.skip(static_cast<std::size_t>(frames) * 4);
-    if (reader.word(8) != frames) throw std::runtime_error("Invalid stage translation track");
-    std::vector<std::array<float, 2>> offsets;
-    for (std::uint64_t i = 0; i < frames; ++i) offsets.push_back({reader.real(), reader.real()});
-    return offsets;
+    if (reader.string() != "3.0") return {};
+    StageUvClip clip;
+    clip.discrete_frames = static_cast<std::uint32_t>(reader.word(4));
+    const auto joints = reader.word(8);
+    const auto uv_tracks = reader.word(8);
+    clip.seconds = reader.real();
+    if (!uv_tracks) return {};
+    if (!std::isfinite(clip.seconds) || clip.seconds <= 0)
+        throw std::runtime_error("Invalid stage UV clip duration");
+    // A clip can animate both the skeleton and the texture.
+    for (std::uint64_t i = 0; i < joints; ++i) {
+        reader.string();
+        for (unsigned stride : {12u, 16u, 12u})
+            reader.skip(reader.count(stride) * stride);
+    }
+    for (std::uint64_t i = 0; i < uv_tracks; ++i) {
+        const auto name = reader.string();
+        const auto frames = reader.count(8);
+        clip.samples.resize(frames);
+        for (auto& frame : clip.samples) {
+            frame.sx = reader.real();
+            frame.sy = reader.real();
+        }
+        if (reader.count(4) != frames) throw std::runtime_error("Invalid stage rotation track");
+        for (auto& frame : clip.samples) frame.rotation = reader.real();
+        if (reader.count(8) != frames) throw std::runtime_error("Invalid stage translation track");
+        for (auto& frame : clip.samples) {
+            frame.u = reader.real();
+            frame.v = reader.real();
+            if (!std::isfinite(frame.u) || !std::isfinite(frame.v) ||
+                !std::isfinite(frame.rotation) || !std::isfinite(frame.sx) || !std::isfinite(frame.sy))
+                throw std::runtime_error("Invalid stage UV sample");
+        }
+        if (name == "uv_track" && !clip.samples.empty()) return clip;
+    }
+    return {};
 }
 
 inline StageMesh read_stage_mesh(const SpriteBytes& bytes, const std::array<float, 16>& transform) {
@@ -78,12 +149,16 @@ inline StageMesh read_stage_mesh(const SpriteBytes& bytes, const std::array<floa
     StageMesh mesh;
     mesh.material = reader.string();
     reader.skip(52);
-    if (reader.string() != "float p[3],n[3],uv[2]; uchar4 c;" || reader.word(8) != 36)
+    const auto layout = reader.string();
+    const auto stride = reader.word(8);
+    const bool rigid = layout == "float p[3],n[3],uv[2]; uchar4 c;" && stride == 36;
+    const bool skinned = layout == "float p[3],n[3],uv[2]; uchar4 c; uchar4 j[4],jw[4];" && stride == 44;
+    if (!rigid && !skinned)
         throw std::runtime_error("Unsupported stage vertex layout");
     const auto vertices = reader.word(8);
     const auto triangles = reader.word(8);
     reader.skip(8);
-    if (vertices > bytes.size() / 36 || triangles > bytes.size() / 6)
+    if (vertices > bytes.size() / stride || triangles > bytes.size() / 6)
         throw std::runtime_error("Invalid stage mesh size");
     for (std::uint64_t i = 0; i < vertices; ++i) {
         const float x = reader.real(), y = reader.real(), z = reader.real();
@@ -93,6 +168,7 @@ inline StageMesh read_stage_mesh(const SpriteBytes& bytes, const std::array<floa
             x * transform[1] + y * transform[5] + z * transform[9] + transform[13],
             x * transform[2] + y * transform[6] + z * transform[10] + transform[14],
             reader.real(), reader.real(), static_cast<unsigned>(reader.word(4))});
+        if (skinned) reader.skip(8); // Draw skinned scenery in the bind pose.
     }
     for (std::uint64_t i = 0; i < triangles * 3; ++i) {
         const auto index = reader.word(2);
@@ -102,13 +178,14 @@ inline StageMesh read_stage_mesh(const SpriteBytes& bytes, const std::array<floa
     return mesh;
 }
 
-inline std::vector<StageMesh> read_stage_scene(const std::filesystem::path& archive,
-                                               const std::string& level, float width,
-                                               float height, float floor) {
+inline std::vector<StageMesh> read_stage_scene(SpriteArchive& assets,
+                                              const std::string& level, float width,
+                                              float height, float floor) {
     const auto prefix = "stages/" + level + "/";
-    const auto bytes = read_sprite_asset(archive, prefix + "background.sgi.msb");
+    const auto bytes = assets.read(prefix + "background.sgi.msb");
     StageReader reader(bytes);
-    if (reader.string() != "2.0") throw std::runtime_error("Unsupported stage scene version");
+    const auto version = reader.string();
+    if (version != "2.0" && version != "2.1") throw std::runtime_error("Unsupported stage scene version");
     const auto count = reader.word(8);
     std::vector<StageMesh> meshes;
     StageMesh plane;
@@ -116,21 +193,26 @@ inline std::vector<StageMesh> read_stage_scene(const std::filesystem::path& arch
         const auto node = reader.string(), shape = reader.string();
         std::array<float, 16> transform;
         for (auto& value : transform) value = reader.real();
-        reader.skip(2);
+        reader.skip(version == "2.1" ? 6 : 2);
         const auto tracks = reader.word(8);
         std::string idle, intro;
         for (std::uint64_t track = 0; track < tracks; ++track) {
             const auto event = reader.string(), clip = reader.string();
-            if (event == "idle") idle = clip;
+            if (event == "idle" || event == "Idle") idle = clip;
             if (event == "intro") intro = clip;
         }
-        auto mesh = read_stage_mesh(read_sprite_asset(archive, prefix + shape + ".sgm.msb"), transform);
-        if (node == "|class_msvictoria" && !idle.empty())
-            mesh.uv_offsets = read_stage_uv_offsets(read_sprite_asset(archive, prefix + idle + ".sga.msb"));
-        if (node == "|class_msvictoria" && !intro.empty())
-            mesh.intro_uv_offsets = read_stage_uv_offsets(read_sprite_asset(archive, prefix + intro + ".sga.msb"));
-        if (node == "FightPlane") plane = std::move(mesh);
-        else meshes.push_back(std::move(mesh));
+        auto mesh = read_stage_mesh(assets.read(prefix + shape + ".sgm.msb"), transform);
+        if (node == "FightPlane") {
+            plane = std::move(mesh);
+        } else if (!mesh.indices.empty()) {
+            if (!idle.empty())
+                mesh.idle_uv = read_stage_uv_clip(assets.read(prefix + idle + ".sga.msb"));
+            if (!intro.empty())
+                mesh.intro_uv = read_stage_uv_clip(assets.read(prefix + intro + ".sga.msb"));
+            mesh.wrap_u = mesh.idle_uv.scrolls(0) || mesh.intro_uv.scrolls(0);
+            mesh.wrap_v = mesh.idle_uv.scrolls(1) || mesh.intro_uv.scrolls(1);
+            meshes.push_back(std::move(mesh));
+        }
     }
     if (plane.vertices.empty()) throw std::runtime_error("Stage has no FightPlane");
     auto lo = plane.vertices.front(), hi = lo;
@@ -152,5 +234,12 @@ inline std::vector<StageMesh> read_stage_scene(const std::filesystem::path& arch
         }
     }
     return meshes;
+}
+
+inline std::vector<StageMesh> read_stage_scene(const std::filesystem::path& archive,
+                                              const std::string& level, float width,
+                                              float height, float floor) {
+    SpriteArchive assets(archive);
+    return read_stage_scene(assets, level, width, height, floor);
 }
 }
