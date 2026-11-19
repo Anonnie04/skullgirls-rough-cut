@@ -55,10 +55,27 @@ struct FoitTransition {
     FoitCondition condition;
 };
 
+struct FoitHit {
+    std::uint16_t stun, stop, damage;
+    std::uint8_t height, strength;
+    std::array<std::vector<FoitExpression>, 4> scripts;
+};
+
+struct FoitSpawn {
+    std::uint16_t child;
+    std::int32_t x, y;
+    std::uint8_t flags;
+    std::vector<FoitExpression> script;
+};
+
 struct FoitFrameVariant {
     FoitCondition condition;
     std::optional<std::uint16_t> duration;
     std::vector<FoitExpression> script;
+    std::optional<FoitHit> hit;
+    bool clear_hit = false;
+    std::vector<FoitSpawn> spawns;
+    bool destroys_entity = false;
 };
 
 struct FoitAnimationFrame {
@@ -66,16 +83,29 @@ struct FoitAnimationFrame {
     std::uint16_t ticks;
     std::vector<FoitExpression> script;
     std::vector<FoitFrameVariant> variants;
+    std::optional<FoitHit> hit;
+    bool clear_hit = false;
+    std::vector<FoitSpawn> spawns;
+    bool destroys_entity = false;
 };
 
 using FoitAnimation = std::vector<FoitAnimationFrame>;
+
+struct FoitTickOverride {
+    FoitCondition condition;
+    FoitAnimationFrame frame;
+};
 
 struct FoitMoveTable {
     std::vector<FoitAnimation> animations;
     std::vector<std::uint16_t> successors;
     std::vector<std::vector<FoitTransition>> transitions;
+    std::vector<std::vector<FoitExpression>> scripts;
     std::vector<std::string> names;
     std::vector<FoitMoveTable> children;
+    std::array<float, 0xb1> initial_variables{};
+    std::string entity_name;
+    std::vector<std::optional<FoitTickOverride>> tick_overrides;
 };
 
 struct FoitAnimationAsset : FoitMoveTable {

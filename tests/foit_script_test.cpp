@@ -68,6 +68,20 @@ int main()
         check(state.bits[0] == true, "The frame script can open the rapid-fire flag");
         apply_foit_assignment({3, false, {1, 0x7f}, {0, 0x3f800000}, {1, 0x7f}}, state);
         check(state.variables[0x7f] == 0.0f, "The frame script updates an enabled variable");
+
+        auto defaults = state;
+        defaults.variables[0x7f] = 3.0f;
+        apply_foit_script({{0x10, true, {0, 0x3f800000}, {0, 0}, {0, 0}},
+                          {8, false, {1, 0x7f}, {0, 0}, {1, 0x7f}}}, state, defaults);
+        check(state.variables[0x7f] == 3.0f, "Default-slot assignment executes in the arithmetic list");
+        auto team_check = step(9);
+        team_check.tests.push_back({0x13, true, {0x19, 0x42}, {0, 0}, {0, 0x42c80000}});
+        inputs = {};
+        inputs[0] = foit_input_sample(8, 0, 0, 0);
+        const FoitCondition team_meter{1, 0, 0, {team_check}, {}};
+        check(!match_foit_condition(team_meter, inputs, true, state), "Unknown team resources gate a command");
+        state.team_variables[0x42] = 100.0f;
+        check(match_foit_condition(team_meter, inputs, true, state) == 0, "Team meter can enable Snapback");
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

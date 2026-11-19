@@ -15,6 +15,7 @@ using FoitInputHistory = std::array<FoitInputSample, 64>;
 struct FoitScriptState {
     std::array<std::optional<float>, 0xb1> variables{};
     std::array<std::optional<bool>, 128> bits{};
+    std::array<std::optional<float>, 0xb1> team_variables{};
 };
 
 FoitInputSample foit_input_sample(unsigned direction, unsigned pressed, unsigned held, unsigned released);
@@ -22,5 +23,7 @@ std::optional<unsigned> match_foit_condition(const FoitCondition& condition, con
                                              bool facing_right, const FoitScriptState& state,
                                              unsigned oldest_trigger = FoitInputHistory{}.size() - 1);
 void apply_foit_assignment(const FoitExpression& expression, FoitScriptState& state);
+void apply_foit_script(const std::vector<FoitExpression>& expressions, FoitScriptState& state,
+                       const FoitScriptState& defaults);
 
 }

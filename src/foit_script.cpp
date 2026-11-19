@@ -31,6 +31,9 @@ std::optional<float> read_operand(FoitOperand operand, const FoitScriptState& st
     case 1:
         if (operand.value < state.variables.size()) return state.variables[operand.value];
         break;
+    case 0x19:
+        if (operand.value < state.team_variables.size()) return state.team_variables[operand.value];
+        break;
     case 0x20:
         if (const auto index = bit_index(operand); index && state.bits[*index])
             return *state.bits[*index] ? 1.0f : 0.0f;
@@ -189,14 +192,35 @@ void apply_foit_assignment(const FoitExpression& expression, FoitScriptState& st
     case 3: result = *left - *right; break;
     case 4: result = *left * *right; break;
     case 5: if (*right == 0) return; result = *left / *right; break;
+    case 6: result = std::abs(*left); break;
     case 0x0b: result = std::max(*left, *right); break;
     case 0x0c: result = std::min(*left, *right); break;
     case 0x0e: if (*right == 0) return; result = *left; break;
     case 0x0f: if (*right != 0) return; result = *left; break;
+    case 0x23: result = *left == *right ? 1.0f : 0.0f; break;
+    case 0x24: result = *left != *right ? 1.0f : 0.0f; break;
+    case 0x25: result = *left < *right ? 1.0f : 0.0f; break;
     default: return;
     }
     if (variable) *variable = result;
     else *bit = result != 0;
+}
+
+void apply_foit_script(const std::vector<FoitExpression>& expressions, FoitScriptState& state,
+                       const FoitScriptState& defaults)
+{
+    // FUN_004918c0 executes each arithmetic node. Comparisons belong to the
+    // separate condition evaluator and are ignored by FUN_0048c260.
+    for (const auto& expression : expressions) {
+        if (expression.comparison) continue;
+        if (expression.opcode == 8 && expression.left.flags == 1 && expression.destination.flags == 1 &&
+            expression.left.value < defaults.variables.size() && expression.destination.value < state.variables.size() &&
+            defaults.variables[expression.left.value] && state.variables[expression.destination.value]) {
+            state.variables[expression.destination.value] = defaults.variables[expression.left.value];
+        } else {
+            apply_foit_assignment(expression, state);
+        }
+    }
 }
 
 }

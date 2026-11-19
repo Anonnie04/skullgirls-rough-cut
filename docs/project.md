@@ -6,7 +6,7 @@ of the game.
 
 The Windows preview covers the title screen, main menu, Training Options,
 character and palette selection, stage selection, and a playable Training
-Room for Filia. The command-line tools inspect GFS archives and
+Room for Filia and Cerebella. The command-line tools inspect GFS archives and
 export sprite layers and frames.
 
 ## Build and run the preview
@@ -24,7 +24,8 @@ Press a key at the title screen. Use the arrow keys to navigate, Z or A to
 accept, and X or S to go back. Open Training, then Training Room, to reach
 Training Options and Character Select.
 
-Select Filia for both players and choose any stage to try two-player Training.
+Select Filia or Cerebella for either player and choose any stage to try two-player Training.
+Teams can mix both characters and use duplicate characters with different palettes.
 Use Up and Down on Stage Select to choose an alternate where available.
 All 32 entries in the installed stage roster are playable. The three Arena
 tournament variants use the shared 3D Arena scene with their original texture
@@ -73,22 +74,22 @@ right and press an attack button to perform a ground tech.
 
 Use down, down-forward, forward plus medium punch and medium kick
 or heavy punch and heavy kick for Snapback. It spends one bar. On hit,
-the chords force in the first or second living Filia reserve, respectively,
+the chords force in the first or second living reserve, respectively,
 and fall back to another living reserve if the selected slot is unavailable.
 Against a solo fighter, Snapback knocks the opponent away.
 
-Select three Filias in different palettes to practice team actions. Medium
+Select three Filias or Cerebellas in different palettes to practice team actions. Medium
 punch plus medium kick tags in the first reserve. Heavy punch plus heavy kick
 tags in the second. Hold forward and use the same chord during blockstun to
 spend one bar on a guard tag, which starts the incoming fighter's assist move.
 
 Light punch plus medium kick calls the first reserve. Medium punch plus heavy
-kick calls the second. Choose each slot's Updo, Hairball, or Ringlet Spike
-strength in Training Options. The main lifebar and portrait follow the active
+kick calls the second. Choose each slot's assist move in Training Options.
+Filia offers Updo, Hairball, and Ringlet Spike strengths. The main lifebar and portrait follow the active
 fighter. Reserve bars use the original HUD layout and carry each fighter's
 health and damage trail through a switch.
 
-Regular tags use Filia's FOIT tag-out and tag-in taunts. Assists use the
+Regular tags use the character's FOIT tag-out and tag-in taunts. Assists use the
 original call and landing poses, then play the full exit jump and landing
 after the selected special. Guard tags use the assist entrance. The
 preview positions these transitions relative to the Training Room camera.
@@ -111,7 +112,93 @@ ground throw. Her forward ground throw turns her during the release sequence.
 Set **Dummy Hit Reaction** to preview sliding knockdown, ceiling bounce,
 crumple, stagger, or freeze when Player 1 hits Player 2. Default uses the
 attack's usual reaction. Filia's throws and Fenrir select the defender's
-pose from her original throw-stun table.
+pose from her original throw-stun table. Cerebella victims use the corresponding
+records from her own throw-stun table.
+
+### Cerebella in Training
+
+Cerebella loads her 564 original named moves, sprites, collision boxes, hit
+descriptors, conditional links, frame scripts, and per-tick move scripts from
+the installed FOIT. Her three intro variants transition into an animated idle
+while the other fighter finishes. Ground and air throws, command-grab capture
+sequences, throw techs, guard, pushblock, burst, tags, assists, victory, and loss
+poses use her character data. Practice saves include her script and move state.
+
+Directions below are relative to the fighter's facing. A quarter-circle forward
+is down, down-forward, forward. A dragon-punch motion is forward, down,
+down-forward.
+
+| Move | Input |
+| --- | --- |
+| Titan Knuckle | Forward + heavy punch |
+| Unbreakable Elbow | Down + medium punch in the air |
+| Glide | Hold heavy punch in the air |
+| Lock 'n' Load | Quarter-circle forward + punch |
+| Diamond Deflector | Dragon-punch motion + light punch |
+| Devil Horns | Dragon-punch motion + medium punch |
+| Cerecopter | Dragon-punch motion + heavy punch |
+| Diamond Drop | Quarter-circle forward + light punch and light kick |
+| Merry Go-Rilla | Quarter-circle back + light punch and light kick |
+| Excellebella | Dragon-punch motion + light punch and light kick |
+| Grab Bag | Quarter-circle forward + light punch and light kick in the air |
+| Tumbling Run | Hold back, then forward + kick |
+| Run Stop | Light punch or light kick during Tumbling Run |
+| Kanchou | Medium punch or medium kick during Tumbling Run |
+| Battle Butt | Heavy punch or heavy kick during Tumbling Run |
+| Pummel Horse | Light punch and light kick during Tumbling Run |
+| Diamond Dynamo | Quarter-circle forward + two punches, one bar |
+| Ultimate Showstopper | Full-circle motion + light punch and light kick, one bar |
+| Diamonds Are Forever | Quarter-circle back + two punches, three bars |
+| Medici Muscle | Light punch, medium punch, back, light kick, medium kick |
+
+Excellebella can catch airborne opponents during hitstun. Grab Bag requires an
+airborne opponent. Merry Go-Rilla has the original minimum-distance grab box.
+Training Options lists each Cerebella slot's available assist moves after the
+team enters Training.
+
+Cerebella remains a partial engine reconstruction. Projectile reflection,
+armor, complete hit-reaction physics, and DHC behavior still require
+implementation. Team entrance and exit travel
+currently uses the shared preview timing with Cerebella's poses. The 360-input
+recognizer approximates the original engine's rotation counter.
+
+Asset-backed checks cover command entry and recovery in both facings, meter
+requirements, ground and air grab capture and release against both playable
+characters, Excellebella combos, Pummel Horse, throw techs, mixed-team tags and
+assists, guard, pushblock, burst, intro completion, palette isolation, sprite
+rendering, and practice-state restoration. Enable them when configuring CMake.
+
+### Character effects and super-freeze
+
+Both fighters emit the original shared effects and spawned visual children from
+their FOIT scripts. The loader retains child defaults, spawn initialization,
+destruction flags, conditional per-tick scripts, and individual sequences within
+tiled textures. Effects use their authored positions, facing, scaling, rotation,
+opacity, and front/back layer. This includes the shared super spark and lightning,
+Filia's Fenrir and Gregor effects, and Cerebella's Showstopper, diamond, and dust
+effects. Filia's combat projectiles retain their existing playback.
+
+Script variable `0x47` controls super-freeze. The caster continues the startup
+script while the opponent, existing combat projectiles, collisions, assists, and
+stage animation pause. Effects with flag `0x8f & 8` keep animating. Input sampling
+continues with a five-frame button buffer. Practice saves preserve the freeze,
+effects, and background darkening.
+
+Effect playback remains a reconstruction: random script operands, some parent
+tag/bit handshakes, victim attachment, and the original shader blending and
+super-flash portraits are incomplete. Owner-bound effects use their original
+`End` animation when available after the move ends. Background darkening uses
+the original easing with the preview renderer's tint.
+
+Asset-backed checks exercise all six supers (including airborne Gregor), visual
+child creation and cleanup, offscreen effect rendering, frozen movement and
+projectiles, input-buffer expiry, and save-state restoration.
+
+```powershell
+cmake -S . -B build -DSKULLGIRLS_TEST_DATA_DIR='C:\path\to\Skullgirls\data02'
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+```
 
 This repository contains the reconstruction source and research notes.
 Game binaries, assets, and generated decompiler output are kept local.

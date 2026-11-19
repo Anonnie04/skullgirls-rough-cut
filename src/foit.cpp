@@ -145,8 +145,10 @@ std::vector<SpriteFrame> read_frame_table(const SpriteBytes& foit, std::size_t m
         try {
             Reader first(foit, start + 11);
             const auto layer = read_layer(first, foit, legacy);
-            const bool legacy_empty = legacy && !layer.tile_columns && !layer.tile_rows;
-            if ((!legacy_empty && !layer.used_tiles) || layer.tile_columns >= 150 || layer.tile_rows >= 150
+            const bool empty = (legacy && !layer.tile_columns && !layer.tile_rows) ||
+                (!layer.used_tiles && std::all_of(layer.channel_sizes.begin(), layer.channel_sizes.end(),
+                    [](auto size) { return size == 0; }));
+            if ((!empty && !layer.used_tiles) || layer.tile_columns >= 150 || layer.tile_rows >= 150
                 || layer.art_offset > main_art_size) {
                 continue;
             }
@@ -159,7 +161,7 @@ std::vector<SpriteFrame> read_frame_table(const SpriteBytes& foit, std::size_t m
                 }
                 remaining -= size;
             }
-            if (!fits && !legacy_empty) {
+            if (!fits && !empty) {
                 continue;
             }
 
@@ -250,7 +252,7 @@ std::uint16_t read_animation_ticks(Reader& reader, FoitAnimationFrame* frame = n
     FoitFrameVariant* variant = nullptr;
     for (;;) {
         const auto first_flags = reader.number(1);
-        reader.take(1);
+        const auto second_flags = reader.number(1);
         const auto third_flags = reader.number(1);
         if (third_flags & 128) read_expression(reader, script);
         const auto duration = static_cast<std::uint16_t>((first_flags & 1) ? reader.number(2) : 1);
@@ -258,21 +260,44 @@ std::uint16_t read_animation_ticks(Reader& reader, FoitAnimationFrame* frame = n
         if (variant && (first_flags & 1)) variant->duration = duration;
         if (third_flags & 64) reader.take(1);
 
-        // Hit descriptors, child spawns and sounds are consumed here by the reader.
+        // FUN_0044e300 maps serialized bit 3 to the active-descriptor clear flag.
+        if (variant) variant->clear_hit = bool(first_flags & 8);
+        else if (frame) frame->clear_hit = bool(first_flags & 8);
+        if (variant) variant->destroys_entity = bool(second_flags & 2);
+        else if (frame) frame->destroys_entity = bool(second_flags & 2);
         const auto payloads = reader.number(1);
         if (payloads & ~7u) throw std::runtime_error("Invalid FOIT animation frame payload");
         if (payloads & 1) {
-            reader.take(27);
+            // Serialized order from FUN_00484500.
+            FoitHit hit{};
+            hit.stun = static_cast<std::uint16_t>(reader.number(2));
+            reader.take(4);
+            hit.height = static_cast<std::uint8_t>(reader.number(1));
+            hit.damage = static_cast<std::uint16_t>(reader.number(2));
+            reader.take(2); // The high half of this word is separate from base damage.
+            hit.strength = static_cast<std::uint8_t>(reader.number(1));
+            reader.take(4);
+            hit.stop = static_cast<std::uint16_t>(reader.number(2));
+            reader.take(9);
             const auto flags = reader.number(1);
             reader.take(1);
-            for (unsigned flag = 1; flag < 16; flag <<= 1)
-                if (flags & flag) read_expression(reader);
+            for (unsigned i = 0; i < hit.scripts.size(); ++i)
+                if (flags & (1u << i)) read_expression(reader, &hit.scripts[i]);
             if (flags & 16) reader.take(2);
+            if (variant) variant->hit = std::move(hit);
+            else if (frame) frame->hit = std::move(hit);
         }
         if (payloads & 2) {
             do {
-                reader.take(10);
-                if (reader.number(1) & 2) read_expression(reader);
+                FoitSpawn spawn{};
+                spawn.child = static_cast<std::uint16_t>(reader.number(2));
+                spawn.x = reader.signed_word();
+                spawn.y = reader.signed_word();
+                const auto flags = reader.number(1);
+                spawn.flags = static_cast<std::uint8_t>(flags);
+                if (flags & 2) read_expression(reader, &spawn.script);
+                if (variant) variant->spawns.push_back(std::move(spawn));
+                else if (frame) frame->spawns.push_back(std::move(spawn));
             } while (reader.number(1));
         }
         if (payloads & 4) reader.take(4 * reader.number(1));
@@ -295,6 +320,7 @@ void read_move_table(Reader& reader, std::size_t file_size, std::size_t sprite_c
     table.animations.reserve(count);
     table.successors.reserve(count);
     table.transitions.reserve(count);
+    table.scripts.reserve(count);
     for (unsigned i = 0; i < count; ++i) {
         const auto flags = reader.number(1);
         if (flags & ~15u) throw std::runtime_error("Invalid FOIT animation flags");
@@ -319,11 +345,14 @@ void read_move_table(Reader& reader, std::size_t file_size, std::size_t sprite_c
             frame.ticks = read_animation_ticks(reader, &frame);
             animation.push_back(std::move(frame));
         }
+        auto& tick_override = table.tick_overrides.emplace_back();
         if (reader.number(1)) {
-            read_condition(reader);
-            read_animation_ticks(reader);
+            tick_override.emplace();
+            read_condition(reader, &tick_override->condition);
+            tick_override->frame.ticks = read_animation_ticks(reader, &tick_override->frame);
         }
-        if (reader.number(1)) read_expression(reader);
+        auto& move_script = table.scripts.emplace_back();
+        if (reader.number(1)) read_expression(reader, &move_script);
         auto& links = table.transitions.emplace_back();
         for (unsigned j = 0; j < transitions; ++j) {
             const auto target = reader.number(2);
@@ -350,16 +379,20 @@ void read_move_table(Reader& reader, std::size_t file_size, std::size_t sprite_c
         if (reader.number(4) != 0x4e535256 || reader.number(4) != 9 || data < reader.position())
             throw std::runtime_error("Invalid FOIT child header");
         reader.take(data - reader.position());
-        reader.take(reader.number(1)); // Entity name.
+        auto& child = table.children.emplace_back();
+        child.entity_name = reader.string();
         reader.take(4);
         if (reader.number(1)) throw std::runtime_error("Unsupported FOIT child entity data");
         reader.take(5 * reader.number(1));
-        reader.take(0xb1 * 4); // Initial entity variables.
+        for (auto& value : child.initial_variables) {
+            const auto bits = reader.number(4);
+            std::memcpy(&value, &bits, sizeof(value));
+        }
         const auto expressions = reader.number(1);
         for (unsigned bit : {1u, 2u, 4u})
             if (expressions & bit) read_expression(reader);
         if (reader.number(1)) throw std::runtime_error("FOIT child has its own sprite table");
-        read_move_table(reader, file_size, sprite_count, table.children.emplace_back(), true, depth + 1);
+        read_move_table(reader, file_size, sprite_count, child, true, depth + 1);
     }
     table.names.reserve(count);
     for (unsigned i = 0; i < count; ++i) table.names.push_back(reader.string());
