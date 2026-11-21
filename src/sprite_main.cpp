@@ -1,3 +1,5 @@
+// Inspect FOIT animation and collision records or export sprite layers as RGBA PAM images.
+
 #include "foit.hpp"
 #include "sprite_asset.hpp"
 
@@ -46,6 +48,7 @@ int main(int argc, char** argv)
     try {
         const std::filesystem::path directory(argv[1]);
         skullgirls::CharacterAssets assets(directory, argv[2]);
+        // A child prefix selects an entity's moves. Omit the move index to list the entire table.
         if (animations) {
             std::string_view selection = argc == 5 ? argv[4] : "";
             const auto colon = selection.find(':');
@@ -75,6 +78,7 @@ int main(int argc, char** argv)
         const bool whole_frame = std::string_view(argv[4]) == "frame";
         const auto frames = assets.read_frames();
         const auto& frame = frames.at(frame_index);
+        // Print frame-local edges unless the caller supplies a position and facing.
         if (boxes) {
             const bool world = argc == 8;
             const auto x = world ? coordinate(argv[5]) : 0;
@@ -101,6 +105,7 @@ int main(int argc, char** argv)
         const auto palette = assets.read_default_palette();
         const skullgirls::SpriteLayer* dimensions = nullptr;
         skullgirls::SpriteBytes rgba;
+        // Full-frame export composites the two primary layers in their stored order.
         const auto layer_count = whole_frame ? 2u : 1u;
         for (std::size_t i = slot; i - slot < layer_count; ++i) {
             const auto& layer = frame.layers.at(i);

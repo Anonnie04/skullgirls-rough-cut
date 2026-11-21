@@ -1,4 +1,6 @@
-﻿#define NOMINMAX
+﻿// Windows preview entry point, front-end screens, and Training Room simulation.
+
+#define NOMINMAX
 #include <windows.h>
 #include <shellapi.h>
 #include <gdiplus.h>
@@ -48,6 +50,7 @@
 
 namespace {
 
+// Owns the decoded texture and the Windows handles used to draw it.
 struct Texture {
     HDC dc = nullptr;
     HBITMAP bitmap = nullptr;
@@ -218,6 +221,7 @@ HudPortraitLayer read_hud_portrait_layer(const skullgirls::SpriteBytes& bytes) {
     return layer;
 }
 
+// Reassembles atlas tiles into frames that can be drawn by tick or by frame index.
 struct TiledAnimation {
     struct Frame {
         unsigned first, count, ticks;
@@ -606,6 +610,7 @@ float4 shade(Pixel i) : SV_TARGET {
     }
 };
 
+// Owns the stage mesh and textures and draws them through Direct3D or the software fallback.
 struct PracticeScene {
     static constexpr int width = 1280, height = 720;
     static constexpr int software_width = 480, software_height = 270;
@@ -941,6 +946,7 @@ constexpr skullgirls::NormalFrame air_throw_tech[] = {
     {460, 3}, {461, 2}, {462, 2}, {463, 3}, {464, 2}, {465, 3}
 };
 
+// Owns both the front-end selection state and the active Training session.
 struct Menu {
     Texture training_frame, player_header, select_header, select_film, select_overlay, select_side,
             select_pedestal, select_cursor, select_cursor_p2, team_frame;
@@ -1002,6 +1008,7 @@ struct Menu {
     std::array<Texture, 3> team_normal, team_glow;
     std::vector<MenuOption> training_options;
     std::size_t training_cursor = 0;
+    // The current screen determines where paint and keyboard messages go.
     enum class TrainingView { none, options, team_size, fighters, stage_select, stage_confirmed, practice };
     TrainingView training = TrainingView::none;
     std::array<int, 2> team_size{1, 2};
@@ -3060,25 +3067,36 @@ struct Menu {
     void load_msfortune() {
         load_scripted_character("msfortune", msfortune_assets, msfortune_frames, msfortune_overlays);
         if (!msfortune_headless_frames.empty()) return;
-        msfortune_headless_frames = msfortune_frames;
-        msfortune_headless_overlays = msfortune_overlays;
-        skullgirls::CharacterAssets art(game_data,"msfortune");
-        for(unsigned ref=2;ref<msfortune_headless_frames.size();++ref) {
-            const auto& sprite=msfortune_assets.sprites[ref-1];
-            if(!sprite.layers[4] || !sprite.layers[4]->used_tiles)continue;
-            const auto* bank=art.find_art(sprite.art_bank);if(!bank)continue;
-            const auto& layer=*sprite.layers[4];auto& frame=msfortune_headless_frames[ref];
-            frame.width=layer.tile_columns*16;frame.height=layer.tile_rows*16;
-            frame.origin_x=float(sprite.origin[0]-sprite.layer_offsets[4][0]);
-            frame.origin_y=float(sprite.origin[1]-sprite.layer_offsets[4][1]);
-            frame.pixels=skullgirls::decode_sprite_layer(layer,*bank);
-            msfortune_headless_overlays.erase(ref);
-            if(sprite.layers[5] && sprite.layers[5]->used_tiles && sprite.layers[5]->tile_columns==layer.tile_columns && sprite.layers[5]->tile_rows==layer.tile_rows) {
-                auto& overlay=msfortune_headless_overlays[ref];overlay.width=frame.width;overlay.height=frame.height;
-                overlay.pixels=skullgirls::decode_sprite_layer(*sprite.layers[5],*bank);
+        skullgirls::CharacterAssets art(game_data, "msfortune");
+        auto frames = msfortune_frames;
+        auto overlays = msfortune_overlays;
+        for (unsigned ref = 2; ref < frames.size(); ++ref) {
+            const auto& sprite = msfortune_assets.sprites[ref - 1];
+            const auto& layer = sprite.layers[4];
+            if (!layer || !layer->used_tiles) continue;
+            const auto* bank = art.find_art(sprite.art_bank);
+            if (!bank) continue;
+
+            auto& frame = frames[ref];
+            frame.width = layer->tile_columns * 16;
+            frame.height = layer->tile_rows * 16;
+            frame.origin_x = static_cast<float>(std::int64_t(sprite.origin[0]) - sprite.layer_offsets[4][0]);
+            frame.origin_y = static_cast<float>(std::int64_t(sprite.origin[1]) - sprite.layer_offsets[4][1]);
+            frame.pixels = skullgirls::decode_sprite_layer(*layer, *bank);
+            overlays.erase(ref);
+            if (const auto& overlay = sprite.layers[5]; overlay && overlay->used_tiles &&
+                overlay->tile_columns == layer->tile_columns && overlay->tile_rows == layer->tile_rows) {
+                auto& effect = overlays[ref];
+                effect.width = frame.width;
+                effect.height = frame.height;
+                effect.pixels = skullgirls::decode_sprite_layer(*overlay, *bank);
             }
         }
+        // A later Training load can retry if any of the bank reads or decodes fail.
+        msfortune_headless_frames = std::move(frames);
+        msfortune_headless_overlays = std::move(overlays);
     }
+    // Decode a fighter's FOIT and sprite channels once. Apply the selected palette when drawing.
     void load_scripted_character(const std::string& name, skullgirls::FoitAnimationAsset& destination,
                                  std::vector<skullgirls::SelectFrame>& frames,
                                  std::map<unsigned, skullgirls::SelectFrame>& layer_overlays) {
@@ -3330,6 +3348,7 @@ struct Menu {
         return hash;
     }
 
+    // Match effect texture hashes in move scripts to named sequences in the sprite archive.
     void load_practice_effects() {
         if (shared_effects.animations.empty())
             shared_effects = skullgirls::CharacterAssets(game_data, "hitspark").read_animations(true);
@@ -3361,7 +3380,9 @@ struct Menu {
             if (!hash || effect_textures.count(hash)) return;
             const auto found = names.find(hash);
             if (found == names.end()) return;
-            effect_textures[hash].load(archive, found->second.first, found->second.second);
+            TiledAnimation animation;
+            animation.load(archive, found->second.first, found->second.second);
+            effect_textures.emplace(hash, std::move(animation));
         };
         const auto scan = [&](const skullgirls::FoitMoveTable& table) {
             std::uint32_t hash;
@@ -3812,6 +3833,7 @@ struct Menu {
 
     ~Menu() { if (practice_load.valid()) practice_load.wait(); }
 
+    // Load the fighters and stage in the background while the window draws the loading animation.
     void start_practice() {
         loading_started = std::chrono::steady_clock::now();
         practice_scene.reset();
@@ -3821,18 +3843,16 @@ struct Menu {
 
     void load_practice() {
         load_movement_frames();
-        for (const auto& team : fighters) {
-            if (std::any_of(team.begin(), team.end(), [](int id) { return std::string_view(roster[id]) == "cerebella"; }))
-                load_cerebella();
-        for (const auto& team : fighters)
-            if (std::any_of(team.begin(), team.end(), [](int id) { return std::string_view(roster[id]) == "peacock"; }))
-                load_peacock();
-            if (std::any_of(team.begin(), team.end(), [](int id) { return std::string_view(roster[id]) == "painwheel"; })) load_painwheel();
-            if (std::any_of(team.begin(), team.end(), [](int id) { return std::string_view(roster[id]) == "parasoul"; }))
-                load_parasoul();
-            if (std::any_of(team.begin(), team.end(), [](int id) { return std::string_view(roster[id]) == "msfortune"; }))
-                load_msfortune();
-        }
+        const auto selected = [&](std::string_view name) {
+            return std::any_of(fighters.begin(), fighters.end(), [name](const auto& team) {
+                return std::any_of(team.begin(), team.end(), [name](int id) { return name == roster[id]; });
+            });
+        };
+        if (selected("cerebella")) load_cerebella();
+        if (selected("peacock")) load_peacock();
+        if (selected("painwheel")) load_painwheel();
+        if (selected("parasoul")) load_parasoul();
+        if (selected("msfortune")) load_msfortune();
         load_practice_effects();
         if (fighters != staged_fighters || locked_colors != staged_colors) {
             prepare_practice_bitmaps();
@@ -3907,10 +3927,10 @@ struct Menu {
         const auto& entries = stages_archive.entries();
         const bool has_scene = std::any_of(entries.begin(), entries.end(),
             [&](const auto& entry) { return entry.name == scene_name; });
-        // Their bind poses leave scenery out of place without the joint animations.
-        const bool draw_scene = has_scene && level != "medici_office_3d" &&
-            level != "training_3d" && level != "boardwalk_3d";
-        if (draw_scene && fov > 0 && fov < 180 && near_plane > 0 && far_plane > near_plane) {
+        // Use the authored flat backdrops where the bind pose leaves scenery detached.
+        const bool use_flat_backdrop = level == "medici_office_3d" || level == "training_3d" ||
+            level == "boardwalk_3d" || level == "rooftops_day_3d" || level == "rooftops_night_3d";
+        if (has_scene && !use_flat_backdrop && fov > 0 && fov < 180 && near_plane > 0 && far_plane > near_plane) {
             try {
                 auto meshes = skullgirls::read_stage_scene(stages_archive, world, width, height, floor);
                 if (meshes.empty()) throw std::runtime_error("Training stage contains no drawable scenery");
@@ -3940,6 +3960,7 @@ struct Menu {
         practice_background = std::move(backdrop);
     }
 
+    // Rethrow loading errors and initialize rendering on the window thread before starting the intro.
     void finish_practice(HWND window) {
         practice_load.get();
         if (practice_scene) practice_scene->initialize_gpu(window);
@@ -4022,6 +4043,7 @@ struct Menu {
         return dummy_armed || dummy_recording.has_value() || dummy_playing.has_value();
     }
 
+    // Keep simulation state in one snapshot, including random state, effects, and the intro clock.
     void save_or_restore_practice(bool restore) {
         if (!restore || !practice_snapshot) {
             if (!restore) practice_snapshot = PracticeSnapshot{practice_players, practice_teams, hud_stats, hud_inputs,
@@ -4443,6 +4465,7 @@ struct Menu {
         point = std::move(incoming);
     }
 
+    // Resolve entries and exits and hand control over when the incoming fighter is ready.
     void advance_practice_tags() {
         using Motion = PracticeTeamTravel::Motion;
         using Kind = PracticeTag::Kind;
@@ -4960,6 +4983,7 @@ struct Menu {
         return RingletSpike::Spin::standard;
     }
 
+    // Run the reserve fighter's entry, attack, and exit alongside the active fighter.
     void advance_practice_assists(float left, float right) {
         using Phase = PracticeAssist::Phase;
         for (std::size_t side = 0; side < practice_teams.size(); ++side) {
@@ -5249,6 +5273,7 @@ struct Menu {
         return true;
     }
 
+    // Advance intros, knockout recovery, or result animations while regular combat is paused.
     void advance_practice_presentation() {
         using namespace skullgirls;
         using Phase = PracticePresentation::Phase;
@@ -6044,6 +6069,7 @@ struct Menu {
         fighter.throw_input = false;
     }
 
+    // Run one simulation step, from input and team actions through contact and effects.
     void practice_tick() {
         if (practice_paused) return;
         const bool super_frozen = practice_super_frozen();
@@ -7072,6 +7098,7 @@ struct Menu {
         }
     }
 
+    // Draw the current stage and fighters, followed by HUD and Training overlays.
     void paint_practice(Gdiplus::Graphics& dc) const {
         const float view_width = 1280.0f + 320.0f * practice_camera_zoom;
         const float view_height = 720.0f + 180.0f * practice_camera_zoom;
@@ -7610,6 +7637,7 @@ struct Menu {
         return bitmap;
     }
 
+    // Prepare lookups for the selected palettes. Sprite bitmaps are cached as they are drawn.
     void prepare_practice_bitmaps() {
         practice_palette_lookups.clear();
         practice_palette_cache.clear();
@@ -7714,6 +7742,7 @@ struct Menu {
         training = TrainingView::team_size;
     }
 
+    // Apply navigation to the current setup screen and start loading after stage confirmation.
     void training_input(WPARAM key, bool accept, bool cancel) {
         const int horizontal = (key == VK_RIGHT) - (key == VK_LEFT);
         const int vertical = (key == VK_DOWN) - (key == VK_UP);
@@ -7935,6 +7964,7 @@ struct Menu {
     bool exit_prompt = false;
     bool unavailable = false;
 
+    // Load the front-end assets and configuration. Training loads its fighters and stage separately.
     void load(const std::filesystem::path& directory) {
         skullgirls::SpriteArchive core(directory / "core.gfs");
         skullgirls::SpriteArchive ui(directory / "ui.gfs");
@@ -8342,6 +8372,7 @@ struct Menu {
 
     }
 
+    // Render the active screen into the back buffer before the window scales it.
     void paint(HDC buffer) const {
         Gdiplus::Graphics dc(buffer);
         if (practice_load.valid()) {

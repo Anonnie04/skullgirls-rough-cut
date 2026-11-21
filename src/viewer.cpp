@@ -1,3 +1,5 @@
+// Windows viewer for exported RGBA images, sprite layers, and FOIT timelines.
+
 #define NOMINMAX
 #include <windows.h>
 #include <shobjidl.h>
@@ -89,6 +91,7 @@ struct SpritePlacement {
     std::int64_t x = 0, y = 0;
 };
 
+// Stores the selected clip and tracks its decoded frame cache and playback clock.
 struct AnimationPreview {
     std::vector<skullgirls::FoitAnimation> clips;
     std::vector<std::uint16_t> successors;
@@ -163,6 +166,7 @@ Image decode_layer(const CharacterSprites& sprites, const skullgirls::SpriteLaye
     return next;
 }
 
+// Cycle the sprite browser through drawable layers, skipping any layer that fails to decode.
 void show_sprite(HWND window, int direction)
 {
     if (!character_sprites) return;
@@ -244,8 +248,9 @@ SpritePlacement locate_sprite(CharacterSprites& sprites, unsigned reference)
     for (std::size_t i = 0; i < frame.layers.size(); ++i) {
         const auto& layer = frame.layers[i];
         if (!layer || !layer->used_tiles) continue;
-        const auto x = (i == 0 ? frame.primary_layer_offset[0] : 0) - std::int64_t(frame.origin[0]);
-        const auto y = (i == 0 ? frame.primary_layer_offset[1] : 0) - std::int64_t(frame.origin[1]);
+        // Fallback layers carry their own offsets relative to the same frame origin.
+        const auto x = frame.layer_offsets[i][0] - std::int64_t(frame.origin[0]);
+        const auto y = frame.layer_offsets[i][1] - std::int64_t(frame.origin[1]);
         const auto& second = frame.layers[1];
         const auto* overlay = i == 0 && second && second->used_tiles &&
             second->tile_columns == layer->tile_columns && second->tile_rows == layer->tile_rows
@@ -298,6 +303,7 @@ void show_record(HWND window, AnimationPreview& animation, std::size_t record)
     InvalidateRect(window, nullptr, FALSE);
 }
 
+// Resolve sprite positions and cumulative frame times whenever the clip or sprite slot changes.
 void prepare_clip(HWND window, AnimationPreview& animation, std::size_t record)
 {
     const auto& clip = animation.clips[animation.clip];
@@ -329,6 +335,7 @@ std::uint64_t animation_elapsed(const AnimationPreview& animation, Clock::time_p
     return animation.tick + static_cast<std::uint64_t>(elapsed);
 }
 
+// Use elapsed time to select the current record and follow the default successor when enabled.
 void advance_animation(HWND window, AnimationPreview& animation)
 {
     if (!animation.playing || !animation.end_ticks.back()) return;
@@ -438,6 +445,7 @@ void open_animation(HWND window, const std::filesystem::path& directory,
     }
 }
 
+// Switch to image mode only after the selected PAM file has loaded successfully.
 void choose_image(HWND window)
 {
     IFileOpenDialog* dialog = nullptr;

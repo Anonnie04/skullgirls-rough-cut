@@ -17,9 +17,11 @@ SpriteBytes decode_sprite_rle(const SpriteBytes& compressed, std::size_t decoded
     };
 
     while (decoded.size() < decoded_size) {
+        // The high bit selects a repeated byte. The low bits encode the run length.
         const auto control = read_byte();
         const unsigned code = control & 0x7f;
         std::size_t count = code + 1;
+        // Control codes 125 through 127 read a one- to three-byte extended length.
         if (code >= 125) {
             count = 0;
             for (unsigned i = 0; i < code - 124; ++i) {

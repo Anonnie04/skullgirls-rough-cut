@@ -1,3 +1,5 @@
+// Command-line entry point for listing a GFS archive as TSV.
+
 #include "gfs.hpp"
 
 #include <exception>

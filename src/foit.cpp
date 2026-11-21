@@ -9,6 +9,7 @@
 namespace skullgirls {
 namespace {
 
+// Bounds-checked cursor for little-endian FOIT metadata.
 class Reader {
 public:
     Reader(const SpriteBytes& bytes, std::size_t position = 0)
@@ -56,6 +57,7 @@ private:
     std::size_t position_;
 };
 
+// Read the sparse tile layout and the channels' location in the separate art bank.
 SpriteLayer read_layer(Reader& reader, const SpriteBytes& foit, bool legacy)
 {
     const auto tiles = reader.number(2);
@@ -177,6 +179,7 @@ std::vector<SpriteFrame> read_frame_table(const SpriteBytes& foit, std::size_t m
                         frame.layers[slot] = read_layer(reader, foit, legacy);
                     }
                 }
+                // Several adjacent layer slots share one position relative to the frame origin.
                 frame.primary_layer_offset = {reader.signed_word(), reader.signed_word()};
                 frame.layer_offsets[0] = frame.layer_offsets[1] = frame.primary_layer_offset;
                 for (const unsigned slot : {2u,4u,6u,7u})
@@ -201,6 +204,7 @@ std::vector<SpriteFrame> read_frame_table(const SpriteBytes& foit, std::size_t m
     throw std::runtime_error("No valid FOIT frame table");
 }
 
+// Read consecutive script operations and collect their operands when requested.
 void read_expression(Reader& reader, std::vector<FoitExpression>* expressions = nullptr)
 {
     for (;;) {
@@ -249,6 +253,7 @@ void read_condition(Reader& reader, FoitCondition* condition = nullptr)
     }
 }
 
+// Decode a frame's duration, script, hit data, spawns, and conditional variants.
 std::uint16_t read_animation_ticks(Reader& reader, FoitAnimationFrame* frame = nullptr)
 {
     std::optional<std::uint16_t> ticks;
@@ -454,6 +459,7 @@ bool is_versioned_foit(const SpriteBytes& foit)
     return header.number(4) == 0x4e535256;
 }
 
+// Older files store grouped palette colors inside FOIT. Expand them into shade rows.
 SpriteBytes read_legacy_palette(const SpriteBytes& foit)
 {
     SpriteBytes palette;

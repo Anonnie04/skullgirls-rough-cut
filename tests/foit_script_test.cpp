@@ -102,6 +102,25 @@ int main()
         check(!match_foit_condition(team_meter, inputs, true, state), "Unknown team resources gate a command");
         state.team_variables[0x42] = 100.0f;
         check(match_foit_condition(team_meter, inputs, true, state) == 0, "Team meter can enable Snapback");
+
+        FoitExpression integer_op{0x1c, false, {1, 0}, {1, 1}, {1, 2}};
+        state.variables[0] = 5.75f;
+        state.variables[1] = 3.25f;
+        state.variables[2] = 0.0f;
+        apply_foit_assignment(integer_op, state);
+        check(state.variables[2] == 7.0f, "Bitwise OR truncates fractional inputs");
+        integer_op.opcode = 0x1d;
+        apply_foit_assignment(integer_op, state);
+        check(state.variables[2] == 1.0f, "Bitwise AND truncates fractional inputs");
+        state.variables[0] = 2147483648.0f;
+        apply_foit_assignment(integer_op, state);
+        check(state.variables[2] == 1.0f, "An out-of-range integer operand leaves the destination unchanged");
+        integer_op.opcode = 0x1e;
+        state.variables[0] = -2147483648.0f;
+        state.variables[1] = -1.0f;
+        apply_foit_assignment(integer_op, state);
+        check(state.variables[2] == 0.0f, "The minimum script integer has zero remainder when divided by -1");
+
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -1,3 +1,5 @@
+// Export Ghidra decompiler output, a function index, and references to selected asset strings.
+
 import java.io.BufferedWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -11,6 +13,7 @@ import ghidra.program.model.listing.Function;
 public class ExportSkullgirls extends GhidraScript {
     @Override
     protected void run() throws Exception {
+        // Pass an existing output directory as the first script argument.
         Path output = Path.of(getScriptArgs()[0]);
         DecompInterface decompiler = new DecompInterface();
         DecompileOptions options = new DecompileOptions();
@@ -30,6 +33,7 @@ public class ExportSkullgirls extends GhidraScript {
         }
     }
 
+    // List references to two known strings and identify their enclosing functions when available.
     private void exportAssetReferences(Path output) throws Exception {
         String[] addresses = {"007eff74", "007e61e0"};
         String[] strings = {"Reverge Package File", "characters-foits.gfs"};
@@ -47,6 +51,7 @@ public class ExportSkullgirls extends GhidraScript {
         }
     }
 
+    // Write pseudocode for successful decompilations and log the outcome for every function.
     private void export(Path output, DecompInterface decompiler) throws Exception {
         int exported = 0;
         int failed = 0;

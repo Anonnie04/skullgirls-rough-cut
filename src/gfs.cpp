@@ -7,6 +7,7 @@
 namespace skullgirls {
 namespace {
 
+// Read the big-endian GFS index without crossing into the archive payload.
 class IndexReader {
 public:
     explicit IndexReader(std::istream& input) : input_(input)
@@ -97,6 +98,7 @@ std::vector<ArchiveEntry> read_archive_index(std::istream& input)
         throw std::runtime_error("GFS entry count exceeds capacity");
     }
     entries.reserve(static_cast<std::size_t>(count));
+    // The index stores sizes and alignment. Derive payload offsets in archive order.
     std::uint64_t position = data_offset;
     for (std::uint64_t i = 0; i < count; ++i) {
         ArchiveEntry entry{};

@@ -6,8 +6,8 @@ data. Once prepared, the preview runs independently of the Steam installation.
 
 The Windows preview covers the title screen, main menu, Training Options,
 character and palette selection, stage selection, and a playable Training
-Room for Filia, Cerebella, Peacock, Parasoul, and Ms. Fortune. The command-line tools inspect GFS archives and
-export sprite layers and frames.
+Room for Filia, Cerebella, Peacock, Parasoul, Ms. Fortune, and Painwheel.
+The command-line tools inspect GFS archives and export sprite layers and frames.
 
 ## Build and run the preview
 
@@ -21,9 +21,19 @@ cmake --build build --config Release
 .\runtime\skullgirls-main-menu.exe
 ```
 
+Loading all six fighters in one Training match can exhaust the Win32 address
+space. Use a 64-bit build for that lineup. If the runtime is already prepared,
+the 64-bit executable can use the same data.
+
+```powershell
+cmake -S . -B build-x64 -G 'Visual Studio 17 2022' -A x64
+cmake --build build-x64 --config Release
+.\runtime\skullgirls-main-menu.exe
+```
+
 The preparation script copies both `data01` and `data02`, verifies every file
 with SHA-256, and writes searchable archive listings under `runtime/index`.
-Filia, Cerebella, Peacock, Parasoul, and Ms. Fortune have readable animation indexes.
+All six playable fighters have readable animation indexes.
 `runtime/manifest.json` records file sizes and hashes. The runtime folder and
 its game assets stay local and are ignored by Git.
 
@@ -33,18 +43,23 @@ another working directory. Development builds also find the repository's
 move the complete `runtime` folder elsewhere and run it there. `data01` stays
 separate for inspection with the asset tools; runtime loading uses `data02`.
 An explicit command-line path can still select another data folder or runtime
-root. Asset-backed tests default to `runtime/data02` when configuring a new build.
+root. CMake registers the asset-backed tests when it finds `characters-foits.gfs`
+in `runtime/data02` or in the directory specified by `SKULLGIRLS_TEST_DATA_DIR`.
+If you configure before preparing the runtime, rerun CMake configuration and
+build before running CTest.
 
 Press a key at the title screen. Use the arrow keys to navigate, Z or A to
 accept, and X or S to go back. Open Training, then Training Room, to reach
 Training Options and Character Select.
 
-Select Filia, Cerebella, Peacock, Parasoul, or Ms. Fortune for either player and choose any stage to try two-player Training.
-Teams can mix these characters and use duplicate characters with different palettes.
+Select any of the six playable fighters for either player and choose a stage
+to try two-player Training. Teams can mix fighters and use duplicate characters
+with different palettes.
 Use Up and Down on Stage Select to choose an alternate where available.
 All 32 entries in the installed stage roster are playable. The three Arena
 tournament variants use the shared 3D Arena scene with their original texture
-sets. Medici Tower, Training Stage, and Boardwalk use the original 2D backdrops.
+sets. Medici Tower, Training Stage, Boardwalk, and both Rooftops variants use
+the original 2D backdrops.
 3D stages use the original clip durations for supported intro and idle texture
 animations. Skinned scenery uses its bind pose.
 Player 1 uses the arrow keys to move, A/S/D for punches, and Z/X/C for kicks.

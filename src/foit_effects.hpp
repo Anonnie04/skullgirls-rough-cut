@@ -71,6 +71,7 @@ struct FoitVisualState {
     }
 };
 
+// Tracks one running entity's move, pose, variables, and visual requests.
 struct FoitEffectPlayback {
     const FoitMoveTable* root = nullptr;
     const FoitMoveTable* table = nullptr;
@@ -131,6 +132,7 @@ struct FoitEffectPlayback {
         defaults = state;
     }
 
+    // Resolve reads from related entities before passing the operation to the local evaluator.
     FoitExpression bind(FoitExpression expression, const FoitScriptState& parent) const {
         const auto operand = [&](FoitOperand item) {
             if (captured_target && item.flags == 0x41 && item.value < capture_state.variables.size() && capture_state.variables[item.value]) {

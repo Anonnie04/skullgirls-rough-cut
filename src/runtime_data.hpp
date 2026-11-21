@@ -28,6 +28,7 @@ inline std::filesystem::path resolve_runtime_data(const std::filesystem::path& e
         if (const auto found = find(requested); !found.empty()) return found;
         throw std::runtime_error("The selected folder does not contain the required data02 archives.");
     }
+    // Check the executable's directory first, then nearby development and runtime folders.
     auto directory = std::filesystem::absolute(executable).parent_path();
     for (unsigned depth = 0; depth < 4; ++depth) {
         if (const auto found = find(directory); !found.empty()) return found;

@@ -7,6 +7,7 @@ namespace {
 
 constexpr std::size_t tile_side = 16;
 
+// Restore the delta-coded rows before interpolating the palette indices between them.
 void restore_palette_indices(SpriteBytes& pixels, std::size_t stride)
 {
     for (std::size_t y = 2; y < tile_side; y += 2) {
@@ -54,6 +55,7 @@ SpriteBytes decode_sprite_layer(const SpriteLayer& layer, const SpriteBytes& art
         throw std::runtime_error("Invalid sprite tile mask size");
     }
 
+    // Only occupied tiles are stored in the art bank. Keep their original grid positions.
     std::vector<std::size_t> occupied;
     for (std::size_t tile = 0; tile < tile_count; ++tile) {
         if (layer.tile_mask[tile / 8] & (1u << (tile % 8))) {
@@ -87,6 +89,7 @@ SpriteBytes decode_sprite_layer(const SpriteLayer& layer, const SpriteBytes& art
             restore_brightness(pixels, stride);
         }
 
+        // The decoded channel packs occupied tiles side by side. Scatter them into the image grid.
         for (std::size_t tile = 0; tile < occupied.size(); ++tile) {
             const auto left = (occupied[tile] % columns) * tile_side;
             const auto top = (occupied[tile] / columns) * tile_side;

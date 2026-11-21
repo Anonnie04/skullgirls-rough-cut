@@ -23,6 +23,7 @@ SpriteBytes SpriteArchive::read(const std::string& name)
 
 std::optional<SpriteBytes> SpriteArchive::read_if_present(const std::string& name)
 {
+    // Older archives put the same sprite names under temp/ and spell Boss Marie differently.
     auto legacy_name = "temp/" + name.substr(name.find('/') + 1);
     if (legacy_name.compare(5, 10, "bossmarie.") == 0) {
         legacy_name.insert(9, "_");
@@ -93,6 +94,7 @@ SpriteBytes CharacterAssets::read_default_palette() const
 
 const SpriteBytes* CharacterAssets::find_art(std::uint8_t bank)
 {
+    // Main art is always loaded. Open and cache the alternate bank on its first use.
     if (bank == 5) return &main_art_;
     if (bank != 4) return nullptr;
     if (!alternate_art_) {

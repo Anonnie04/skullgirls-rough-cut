@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace skullgirls {
 namespace {
@@ -13,6 +14,17 @@ std::optional<float> literal(std::uint32_t bits)
     static_assert(sizeof(value) == sizeof(bits));
     std::memcpy(&value, &bits, sizeof(value));
     return std::isfinite(value) ? std::optional<float>{value} : std::nullopt;
+}
+
+std::optional<std::int32_t> script_integer(float value)
+{
+    // Use double for the range check because INT32_MAX rounds up as a float.
+    const auto truncated = std::trunc(static_cast<double>(value));
+    if (truncated >= std::numeric_limits<std::int32_t>::min() &&
+        truncated <= std::numeric_limits<std::int32_t>::max()) {
+        return static_cast<std::int32_t>(truncated);
+    }
+    return std::nullopt;
 }
 
 std::optional<std::size_t> bit_index(FoitOperand operand)
@@ -157,6 +169,7 @@ FoitInputSample foit_input_sample(unsigned direction, unsigned pressed, unsigned
     return sample;
 }
 
+// Find the newest buffered sample that satisfies the command. Age zero is the newest sample.
 std::optional<unsigned> match_foit_condition(const FoitCondition& condition, const FoitInputHistory& history,
                                              bool facing_right, const FoitScriptState& state,
                                              unsigned oldest_trigger)
@@ -201,9 +214,21 @@ void apply_foit_assignment(const FoitExpression& expression, FoitScriptState& st
     case 0x0c: result = std::min(*left, *right); break;
     case 0x0e: if (*right == 0) return; result = *left; break;
     case 0x0f: if (*right != 0) return; result = *left; break;
-    case 0x1c: result = float(int(*left) | int(*right)); break;
-    case 0x1d: result = float(int(*left) & int(*right)); break;
-    case 0x1e: if (int(*right) == 0) return; result = float(int(*left) % int(*right)); break;
+    case 0x1c: case 0x1d: case 0x1e: {
+        const auto a = script_integer(*left);
+        const auto b = script_integer(*right);
+        if (!a || !b) return;
+        if (expression.opcode == 0x1c) {
+            result = static_cast<float>(*a | *b);
+        } else if (expression.opcode == 0x1d) {
+            result = static_cast<float>(*a & *b);
+        } else {
+            if (*b == 0) return;
+            // Widen the division so INT32_MIN % -1 is defined.
+            result = static_cast<float>(static_cast<std::int64_t>(*a) % *b);
+        }
+        break;
+    }
     case 0x23: result = *left == *right ? 1.0f : 0.0f; break;
     case 0x24: result = *left != *right ? 1.0f : 0.0f; break;
     case 0x25: result = *left < *right ? 1.0f : 0.0f; break;

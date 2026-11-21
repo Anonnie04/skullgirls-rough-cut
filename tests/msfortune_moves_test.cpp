@@ -3,6 +3,32 @@
 
 namespace {
 void check(bool ok, const std::string& message) { if (!ok) throw std::runtime_error(message); }
+
+void load_with_retry(Menu& menu) {
+    menu.load_scripted_character("msfortune", menu.msfortune_assets, menu.msfortune_frames, menu.msfortune_overlays);
+    const auto directory = menu.game_data;
+    menu.game_data = directory / "characters-art.gfs";
+    bool rejected = false;
+    try {
+        menu.load_msfortune();
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    menu.game_data = directory;
+    check(rejected, "Headless asset loading reports an unavailable archive");
+
+    menu.load_msfortune();
+    bool loaded_headless_frame = false;
+    for (std::size_t ref = 2; ref < menu.msfortune_headless_frames.size(); ++ref) {
+        const auto& layer = menu.msfortune_assets.sprites[ref - 1].layers[4];
+        if (layer && layer->used_tiles && menu.msfortune_headless_frames[ref].pixels != menu.msfortune_frames[ref].pixels) {
+            loaded_headless_frame = true;
+            break;
+        }
+    }
+    check(loaded_headless_frame, "Retry loads headless frames after a failed archive read");
+}
+
 void commands(Menu& menu, bool facing) {
     constexpr unsigned normals[][6] = {{107,112,114,109,113,118}, {119,122,124,121,123,126}, {127,129,131,128,130,132}};
     for (unsigned stance=0; stance<3; ++stance) for (unsigned button=0; button<6; ++button) {
@@ -224,7 +250,7 @@ int wmain(int argc,wchar_t** argv) {
     Gdiplus::GdiplusStartupInput input; ULONG_PTR graphics=0;
     if(Gdiplus::GdiplusStartup(&graphics,&input,nullptr)!=Gdiplus::Ok) return 2;
     int result=0;
-    try { Menu menu; menu.game_data=argv[1]; menu.load_msfortune();
+    try { Menu menu; menu.game_data=argv[1]; load_with_retry(menu);
         check(menu.msfortune_assets.animations.size()==545 && menu.msfortune_frames[2].width,"Ms. Fortune assets load");
         commands(menu,true); commands(menu,false); specials(menu,true);specials(menu,false);training(menu); movement_and_defense(menu); teams(menu); throw_victim(menu);head_and_combat(menu);
         std::cout<<"Ms. Fortune moves, projectiles, throws, and Training integration passed\n";

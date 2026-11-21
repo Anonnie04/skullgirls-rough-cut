@@ -1,3 +1,5 @@
+// Apply recovered GFS loader names and explanatory comments to the open Ghidra program.
+
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.symbol.SourceType;
@@ -5,6 +7,7 @@ import ghidra.program.model.symbol.SourceType;
 public class AnnotateGfs extends GhidraScript {
     @Override
     protected void run() throws Exception {
+        // These virtual addresses refer to the Steam build listed in GFS-DECOMPILATION.md.
         annotate("004e8370", "parse_package_header",
             "Name recovered from the embedded re::gfs diagnostic. Returns an MSB reader and writes entry count and first payload offset.");
         annotate("004ae950", "read_msb8_as_u32",
@@ -17,6 +20,7 @@ public class AnnotateGfs extends GhidraScript {
             "Null name requests capacity for the entry count. Non-null name appends an entry to the 0x28-byte element array.");
     }
 
+    // Resolve the function at its entry address before updating Ghidra's listing.
     private void annotate(String address, String name, String comment) throws Exception {
         Function function = getFunctionAt(toAddr(address));
         if (function == null) {

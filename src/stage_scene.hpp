@@ -9,6 +9,7 @@
 
 namespace skullgirls {
 
+// Bounds-checked reader for the big-endian stage and tiled-animation formats.
 class StageReader {
     const SpriteBytes& bytes_;
     std::size_t offset_ = 0;
@@ -61,6 +62,11 @@ struct StageUvClip {
     std::uint32_t discrete_frames = 0;
     std::vector<Sample> samples;
 
+    static StageUv transform(const Sample& frame) {
+        const float c = std::cos(frame.rotation), s = std::sin(frame.rotation);
+        return {c * frame.sx, -s * frame.sy, frame.u, s * frame.sx, c * frame.sy, frame.v};
+    }
+
     StageUv sample(double elapsed) const {
         double phase = std::clamp(elapsed / seconds, 0.0, 1.0);
         if (discrete_frames > 1)
@@ -72,10 +78,8 @@ struct StageUvClip {
         const auto lerp = [t = static_cast<float>(frame - i)](float start, float end) {
             return start + t * (end - start);
         };
-        const float angle = lerp(a.rotation, b.rotation);
-        const float c = std::cos(angle), s = std::sin(angle);
-        const float sx = lerp(a.sx, b.sx), sy = lerp(a.sy, b.sy);
-        return {c * sx, -s * sy, lerp(a.u, b.u), s * sx, c * sy, lerp(a.v, b.v)};
+        return transform({lerp(a.sx, b.sx), lerp(a.sy, b.sy), lerp(a.rotation, b.rotation),
+                          lerp(a.u, b.u), lerp(a.v, b.v)});
     }
 
     bool scrolls(unsigned axis) const {
@@ -84,6 +88,25 @@ struct StageUvClip {
         const auto& last = samples.back();
         const float span = axis == 0 ? last.u - first.u : last.v - first.v;
         return std::abs(span) >= 0.999f;
+    }
+
+    bool repeats_atlas(const std::vector<StageVertex>& vertices, unsigned axis) const {
+        if (discrete_frames <= 1 || vertices.empty()) return false;
+        // Some sprite frames move the entire mesh into a neighboring copy of the atlas.
+        return std::any_of(samples.begin(), samples.end(), [&](const Sample& frame) {
+            const auto uv = transform(frame);
+            const auto row = axis * 3;
+            const auto coordinate = [&](const StageVertex& vertex) {
+                return uv[row] * vertex.u + uv[row + 1] * vertex.v + uv[row + 2];
+            };
+            float low = coordinate(vertices.front()), high = low;
+            for (const auto& vertex : vertices) {
+                const auto value = coordinate(vertex);
+                low = std::min(low, value);
+                high = std::max(high, value);
+            }
+            return (low >= 1.0f && high > 1.0f) || (high <= 0.0f && low < 0.0f);
+        });
     }
 };
 
@@ -209,11 +232,16 @@ inline std::vector<StageMesh> read_stage_scene(SpriteArchive& assets,
                 mesh.idle_uv = read_stage_uv_clip(assets.read(prefix + idle + ".sga.msb"));
             if (!intro.empty())
                 mesh.intro_uv = read_stage_uv_clip(assets.read(prefix + intro + ".sga.msb"));
-            mesh.wrap_u = mesh.idle_uv.scrolls(0) || mesh.intro_uv.scrolls(0);
-            mesh.wrap_v = mesh.idle_uv.scrolls(1) || mesh.intro_uv.scrolls(1);
+            const auto wraps = [&](unsigned axis) {
+                return mesh.idle_uv.scrolls(axis) || mesh.intro_uv.scrolls(axis) ||
+                    mesh.idle_uv.repeats_atlas(mesh.vertices, axis) || mesh.intro_uv.repeats_atlas(mesh.vertices, axis);
+            };
+            mesh.wrap_u = wraps(0);
+            mesh.wrap_v = wraps(1);
             meshes.push_back(std::move(mesh));
         }
     }
+    // Use the FightPlane bounds to align the scenery with Training coordinates.
     if (plane.vertices.empty()) throw std::runtime_error("Stage has no FightPlane");
     auto lo = plane.vertices.front(), hi = lo;
     for (const auto& v : plane.vertices) {

@@ -1,3 +1,5 @@
+// Decode one compressed sprite channel into a raw byte file.
+
 #include "sprite_rle.hpp"
 
 #include <charconv>
