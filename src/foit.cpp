@@ -178,7 +178,11 @@ std::vector<SpriteFrame> read_frame_table(const SpriteBytes& foit, std::size_t m
                     }
                 }
                 frame.primary_layer_offset = {reader.signed_word(), reader.signed_word()};
-                reader.take(32);
+                frame.layer_offsets[0] = frame.layer_offsets[1] = frame.primary_layer_offset;
+                for (const unsigned slot : {2u,4u,6u,7u})
+                    frame.layer_offsets[slot] = {reader.signed_word(), reader.signed_word()};
+                frame.layer_offsets[3] = frame.layer_offsets[2];
+                frame.layer_offsets[5] = frame.layer_offsets[4];
                 for (auto& group : frame.box_groups) {
                     const auto boxes = reader.number(2);
                     for (std::uint32_t j = 0; j < boxes; ++j) {
@@ -254,6 +258,10 @@ std::uint16_t read_animation_ticks(Reader& reader, FoitAnimationFrame* frame = n
         const auto first_flags = reader.number(1);
         const auto second_flags = reader.number(1);
         const auto third_flags = reader.number(1);
+        // FUN_0044e300 retains the high nibble: entry-only and temporary
+        // per-tick expression modes. Conditional records are live, not snapshots.
+        if (variant) variant->script_flags = static_cast<std::uint8_t>(first_flags >> 4);
+        else if (frame) frame->script_flags = static_cast<std::uint8_t>(first_flags >> 4);
         if (third_flags & 128) read_expression(reader, script);
         const auto duration = static_cast<std::uint16_t>((first_flags & 1) ? reader.number(2) : 1);
         if (!ticks) ticks = duration;

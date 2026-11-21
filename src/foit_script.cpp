@@ -26,7 +26,7 @@ std::optional<std::size_t> bit_index(FoitOperand operand)
 std::optional<float> read_operand(FoitOperand operand, const FoitScriptState& state)
 {
     switch (operand.flags) {
-    case 0:
+    case 0: case 0x24:
         return literal(operand.value);
     case 1:
         if (operand.value < state.variables.size()) return state.variables[operand.value];
@@ -141,17 +141,17 @@ FoitInputSample foit_input_sample(unsigned direction, unsigned pressed, unsigned
     sample.direction = static_cast<std::uint8_t>(direction);
     for (unsigned i = 0; i < 6; ++i) {
         const unsigned bit = 1u << i;
-        sample.buttons[i] = pressed & bit ? 0 : held & bit ? 1 : released & bit ? 3 : 4;
+        sample.buttons[i] = pressed & bit ? 0 : held & bit ? 3 : released & bit ? 1 : 4;
     }
     // FUN_0046c440/0046c5b0 synthesize the Any/Two/Three Punch and Kick states.
     for (unsigned group = 0; group < 2; ++group) {
         const auto first = sample.buttons.begin() + group * 3;
         const auto fresh = std::count(first, first + 3, 0);
-        const auto down = std::count(first, first + 3, 1);
-        const auto up = std::count(first, first + 3, 3);
+        const auto down = std::count(first, first + 3, 3);
+        const auto up = std::count(first, first + 3, 1);
         for (unsigned required = 1; required <= 3; ++required) {
             sample.buttons[6 + (required - 1) * 2 + (1 - group)] =
-                fresh >= required ? 0 : down >= required ? 1 : up >= required ? 3 : 4;
+                fresh >= required ? 0 : up >= required ? 1 : down >= required ? 3 : 4;
         }
     }
     return sample;
@@ -193,10 +193,17 @@ void apply_foit_assignment(const FoitExpression& expression, FoitScriptState& st
     case 4: result = *left * *right; break;
     case 5: if (*right == 0) return; result = *left / *right; break;
     case 6: result = std::abs(*left); break;
+    case 7: result = std::trunc(*left); break;
+    // FUN_0048c260's trigonometric operands are degrees.
+    case 9: result = float(std::sin(double(*left) * 0.017453292519943295)); break;
+    case 10: result = float(std::cos(double(*left) * 0.017453292519943295)); break;
     case 0x0b: result = std::max(*left, *right); break;
     case 0x0c: result = std::min(*left, *right); break;
     case 0x0e: if (*right == 0) return; result = *left; break;
     case 0x0f: if (*right != 0) return; result = *left; break;
+    case 0x1c: result = float(int(*left) | int(*right)); break;
+    case 0x1d: result = float(int(*left) & int(*right)); break;
+    case 0x1e: if (int(*right) == 0) return; result = float(int(*left) % int(*right)); break;
     case 0x23: result = *left == *right ? 1.0f : 0.0f; break;
     case 0x24: result = *left != *right ? 1.0f : 0.0f; break;
     case 0x25: result = *left < *right ? 1.0f : 0.0f; break;

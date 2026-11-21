@@ -1,6 +1,7 @@
 #include "foit_script.hpp"
 
 #include <iostream>
+#include <cmath>
 #include <stdexcept>
 
 namespace {
@@ -58,6 +59,19 @@ int main()
         inputs[3].direction = inputs[4].direction = 2;
         check(!match_foit_condition(motion, inputs, false, state), "The reject pattern interrupts an otherwise valid motion");
 
+        const auto held_punch = foit_input_sample(8, 0, 3, 0);
+        const auto released_punch = foit_input_sample(8, 0, 0, 3);
+        check(held_punch.buttons[0] == 3 && held_punch.buttons[9] == 3,
+            "Native state 3 means held, including synthesized two-punch input");
+        check(released_punch.buttons[0] == 1 && released_punch.buttons[9] == 1,
+            "Native state 1 means released, including synthesized two-punch input");
+        auto negative_edge = step(9); negative_edge.buttons[0] = 2;
+        inputs = {}; inputs[0] = released_punch;
+        check(match_foit_condition({1, 0, 0, {negative_edge}, {}}, inputs, true, state) == 0,
+            "State 2 accepts a release edge");
+        inputs[0] = held_punch;
+        check(!match_foit_condition({1, 0, 0, {negative_edge}, {}}, inputs, true, state),
+            "Holding a button does not create another command edge");
         const auto mixed = foit_input_sample(8, 1, 3, 0);
         check(mixed.buttons[7] == 0 && mixed.buttons[9] == 4, "Two-punch edge requires two fresh presses");
         const auto two_punches = foit_input_sample(8, 3, 3, 0);
@@ -69,6 +83,12 @@ int main()
         apply_foit_assignment({3, false, {1, 0x7f}, {0, 0x3f800000}, {1, 0x7f}}, state);
         check(state.variables[0x7f] == 0.0f, "The frame script updates an enabled variable");
 
+        state.variables[0xa8] = 90.0f; state.variables[0x9e] = state.variables[0x9f] = 0.0f;
+        apply_foit_assignment({9, false, {1, 0xa8}, {0, 0}, {1, 0x9f}}, state);
+        apply_foit_assignment({10, false, {1, 0xa8}, {0, 0}, {1, 0x9e}}, state);
+        check(std::abs(*state.variables[0x9f] - 1.0f) < 0.00001f &&
+              std::abs(*state.variables[0x9e]) < 0.00001f,
+              "Authored projectile angles use sine/cosine in degrees");
         auto defaults = state;
         defaults.variables[0x7f] = 3.0f;
         apply_foit_script({{0x10, true, {0, 0x3f800000}, {0, 0}, {0, 0}},

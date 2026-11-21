@@ -20,6 +20,7 @@ struct CerebellaPlayback {
     bool facing_right = true, hit_resolved = false, reacting = false;
     bool captured_target = false, release_target = false;
     unsigned throw_damage = 0;
+    unsigned throw_damage_slot = 0x78;
     FoitScriptState target_state = [] {
         FoitScriptState value;
         for (auto& slot : value.variables) slot = 0.0f;
@@ -185,9 +186,9 @@ struct CerebellaPlayback {
             expression.right = operand(expression.right);
             apply_foit_assignment(expression, target_state);
         }
-        if (value(0x78) != 0 && value(0x74) > 0) {
+        if (value(throw_damage_slot) != 0 && value(0x74) > 0) {
             throw_damage += static_cast<unsigned>(value(0x74));
-            state.variables[0x78] = 0.0f;
+            state.variables[throw_damage_slot] = 0.0f;
         }
         release_target = target_state.variables[0xb0].value_or(0.0f) != 0;
     }

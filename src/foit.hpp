@@ -19,6 +19,7 @@ struct SpriteFrame {
     std::array<std::optional<SpriteLayer>, 8> layers;
     std::array<std::int32_t, 2> origin;
     std::array<std::int32_t, 2> primary_layer_offset;
+    std::array<std::array<std::int32_t, 2>, 8> layer_offsets{};
     std::array<std::vector<FoitBox>, 3> box_groups;
 };
 
@@ -76,6 +77,7 @@ struct FoitFrameVariant {
     bool clear_hit = false;
     std::vector<FoitSpawn> spawns;
     bool destroys_entity = false;
+    std::uint8_t script_flags = 0;
 };
 
 struct FoitAnimationFrame {
@@ -87,6 +89,7 @@ struct FoitAnimationFrame {
     bool clear_hit = false;
     std::vector<FoitSpawn> spawns;
     bool destroys_entity = false;
+    std::uint8_t script_flags = 0;
 };
 
 using FoitAnimation = std::vector<FoitAnimationFrame>;

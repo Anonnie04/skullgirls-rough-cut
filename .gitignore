@@ -2,6 +2,7 @@
 /output/
 /project/
 /tools/
+/runtime/
 *.log
 *.gfs
 *.gbs

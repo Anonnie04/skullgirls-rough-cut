@@ -1,0 +1,43 @@
+#pragma once
+
+#include <filesystem>
+#include <stdexcept>
+
+namespace skullgirls {
+
+inline bool is_runtime_data(const std::filesystem::path& directory)
+{
+    for (const auto* name : {"core.gfs", "ui.gfs", "ui-win.gfs", "sprites.gfs",
+                             "characters-foits.gfs", "characters-art.gfs", "stages.gfs",
+                             "stages-textures.gfs", "stages-textures2d.gfs"})
+        if (!std::filesystem::is_regular_file(directory / name)) return false;
+    return true;
+}
+
+// Resolve from the executable so launch shortcuts and other working directories
+// use the same portable assets. An explicit path can name data02 or its parent.
+inline std::filesystem::path resolve_runtime_data(const std::filesystem::path& executable,
+                                                 const std::filesystem::path& requested = {})
+{
+    const auto find = [](const std::filesystem::path& root) -> std::filesystem::path {
+        for (const auto& directory : {root / "data02", root})
+            if (is_runtime_data(directory)) return std::filesystem::absolute(directory).lexically_normal();
+        return {};
+    };
+    if (!requested.empty()) {
+        if (const auto found = find(requested); !found.empty()) return found;
+        throw std::runtime_error("The selected folder does not contain the required data02 archives.");
+    }
+    auto directory = std::filesystem::absolute(executable).parent_path();
+    for (unsigned depth = 0; depth < 4; ++depth) {
+        if (const auto found = find(directory); !found.empty()) return found;
+        if (const auto found = find(directory / "runtime"); !found.empty()) return found;
+        const auto parent = directory.parent_path();
+        if (parent == directory) break;
+        directory = parent;
+    }
+    throw std::runtime_error("Local game data was not found. Prepare runtime/data01 and runtime/data02 "
+                             "with scripts/prepare-runtime.ps1, or pass a data02 folder on the command line.");
+}
+
+}

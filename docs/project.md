@@ -1,31 +1,46 @@
-# Skullgirls: Rough Cut
+﻿# Skullgirls: Rough Cut
 
 An unofficial C++17 reconstruction of parts of the Skullgirls 2nd Encore
-Windows build. The project loads assets at runtime from a local installation
-of the game.
+Windows build. The project loads assets from a local runtime copy of the game
+data. Once prepared, the preview runs independently of the Steam installation.
 
 The Windows preview covers the title screen, main menu, Training Options,
 character and palette selection, stage selection, and a playable Training
-Room for Filia and Cerebella. The command-line tools inspect GFS archives and
+Room for Filia, Cerebella, Peacock, Parasoul, and Ms. Fortune. The command-line tools inspect GFS archives and
 export sprite layers and frames.
 
 ## Build and run the preview
 
 Use Visual Studio 2022 with Desktop development with C++ and CMake.
-Run from the repository root and substitute the path to your game installation.
+Run from the repository root. Build, then prepare your local runtime once:
 
 ```powershell
 cmake -S . -B build -G 'Visual Studio 17 2022' -A Win32
 cmake --build build --config Release
-.\build\Release\skullgirls-main-menu.exe 'C:\path\to\Skullgirls\data02'
+.\scripts\prepare-runtime.ps1 -OriginalGame 'C:\path\to\Skullgirls'
+.\runtime\skullgirls-main-menu.exe
 ```
+
+The preparation script copies both `data01` and `data02`, verifies every file
+with SHA-256, and writes searchable archive listings under `runtime/index`.
+Filia, Cerebella, Peacock, Parasoul, and Ms. Fortune have readable animation indexes.
+`runtime/manifest.json` records file sizes and hashes. The runtime folder and
+its game assets stay local and are ignored by Git.
+
+The preview uses `data02` beside its executable, including when launched from
+another working directory. Development builds also find the repository's
+`runtime/data02`. Later builds update the portable preview executable. You can
+move the complete `runtime` folder elsewhere and run it there. `data01` stays
+separate for inspection with the asset tools; runtime loading uses `data02`.
+An explicit command-line path can still select another data folder or runtime
+root. Asset-backed tests default to `runtime/data02` when configuring a new build.
 
 Press a key at the title screen. Use the arrow keys to navigate, Z or A to
 accept, and X or S to go back. Open Training, then Training Room, to reach
 Training Options and Character Select.
 
-Select Filia or Cerebella for either player and choose any stage to try two-player Training.
-Teams can mix both characters and use duplicate characters with different palettes.
+Select Filia, Cerebella, Peacock, Parasoul, or Ms. Fortune for either player and choose any stage to try two-player Training.
+Teams can mix these characters and use duplicate characters with different palettes.
 Use Up and Down on Stage Select to choose an alternate where available.
 All 32 entries in the installed stage roster are playable. The three Arena
 tournament variants use the shared 3D Arena scene with their original texture
@@ -38,7 +53,7 @@ for kicks. Double-tap a direction to dash. R resets both fighters. Press
 Enter to pause. Use the arrow keys and Enter to select Resume Game or
 another pause menu option.
 
-Filia's intro plays when Training loads. Press an attack button to skip it,
+Each selected fighter's intro plays when Training loads. Press an attack button to skip it,
 or press Shift+R to reset and replay it. **Filia Intro** and **Filia Win Pose**
 in Training Options let you select a variant or cycle through them. With
 K.O. enabled, the last fighter's defeat plays the winner's victory pose and
@@ -115,6 +130,23 @@ attack's usual reaction. Filia's throws and Fenrir select the defender's
 pose from her original throw-stun table. Cerebella victims use the corresponding
 records from her own throw-stun table.
 
+### Intro playback
+
+All six playable characters share the original FOIT intro timelines and child
+entity playback. Filia's trip and bow use their authored proxies and hat;
+Peacock's car stays alive while her body is hidden; Ms. Fortune's From Pieces
+intro waits for its timer, then restores her head before returning to idle.
+Live conditional records, immediate links, native completion signals, and
+move-entry render-scale resets control these sequences. Finishing or skipping
+an intro initializes combat state and removes presentation proxies, including
+Ms. Fortune's temporary headless state. Practice saves preserve live intro clocks.
+
+The `intro-moves` regression suite covers every variant on both sides,
+visibility/proxy handoffs, reassembly, skips at five checkpoints, and saves.
+This uses the local game scripts and the exported engine routines
+`FUN_00499980`, `FUN_0049a7f0`, `FUN_0049cdf0`, `FUN_0049a260`, and `FUN_0048bec0`
+as references. It does not establish exact original audio or camera timing.
+
 ### Cerebella in Training
 
 Cerebella loads her 564 original named moves, sprites, collision boxes, hit
@@ -168,9 +200,182 @@ characters, Excellebella combos, Pummel Horse, throw techs, mixed-team tags and
 assists, guard, pushblock, burst, intro completion, palette isolation, sprite
 rendering, and practice-state restoration. Enable them when configuring CMake.
 
+### Painwheel in Training
+
+Painwheel loads 578 original named moves and 65 child tables. Both players can
+select her with her own artwork, palette, collision boxes, HUD symbol, intro,
+victory and loss poses. Training saves, mixed teams, tags, assists, guard,
+pushblock, burst, and ground/air throws include her playback.
+
+| Move | Input |
+| --- | --- |
+| Gae Bolga Stinger | Quarter-circle forward + punch |
+| Buer Reaper | Quarter-circle forward + kick, ground or air |
+| Flight | Quarter-circle back + kick; steer in eight directions |
+| Hatred Guard | Hold a chargeable normal, then release |
+| Death Crawl | Quarter-circle forward + two punches, one bar |
+| Buer Thresher | Quarter-circle forward + two kicks in the air, one bar |
+| Hatred Install | Quarter-circle back + two kicks, two bars |
+| Buer Overdrive | Quarter-circle back + two punches, three bars |
+| Ground / air throw | Light punch + light kick |
+| Snapback | Quarter-circle forward + MP+MK or HP+HK, one bar |
+
+Stinger nails use the live child-entity interpreter. Buer Reaper synchronizes
+its zero-damage capture with the later authored impact hitbox. Overdrive keeps
+its authored hit descriptor while rolling. Hatred Guard and Overdrive consume
+the authored armor hit budget without interrupting the attack. The shared
+input sampler now follows the original engine's states: 0 pressed, 1 released,
+3 held, 4 up. This also fixes charge/release commands on earlier characters. Native sine/cosine
+operations supply nail trajectories in degrees, and airborne camera framing
+uses the active character's sprite origins.
+
+The reconstruction remains partial: armor damage reflection/scaling, full
+Install modifiers, DHCs, and exact original camera/audio behavior are not
+complete. Team travel still uses the shared preview timing. Asset-backed tests
+cover normals and commands in both facings, flight steering and attacks,
+charge/release and armor exhaustion, nail rendering/travel, capture/release,
+movement, defense, mixed teams, rendering, and practice saves. Intro checks run
+Painwheel in a separate asset scope to stay within the Win32 address space.
+
+### Peacock in Training
+
+Peacock loads her 548 original named animations, sprites, collision boxes,
+hit descriptors, conditional links, and scripts. Either player can select her
+in Training, including mixed teams with Filia and Cerebella. Movement, normals,
+guard, pushblock, burst, intros, win/loss poses, tags, and practice saves use
+her own playback. Assist options include all three strengths of Bang!, George,
+and Shadow of Impending Doom.
+
+Directions below are relative to Peacock's facing.
+
+| Move | Input |
+| --- | --- |
+| Bang! | Quarter-circle forward + punch |
+| Shadow of Impending Doom | Quarter-circle back + punch; hold to charge, release to drop |
+| The Hole Idea | Quarter-circle back + kick |
+| George | Quarter-circle forward + kick |
+| Argus Agony | Quarter-circle forward + two punches, one bar |
+| Lonesome Lenny | Quarter-circle forward + two kicks, one bar |
+| Goodfellas | Quarter-circle back + two punches during ground throw, three bars |
+| Ground / air throw | Light punch + light kick; hold back for backward ground throw |
+| Snapback | Quarter-circle forward + MP+MK or HP+HK, one bar |
+
+Peacock and Parasoul projectiles use live FOIT records, including render-scale
+resets after hidden spawn frames, independent tick conditions, finite timers,
+held-button input, and floor contacts that preserve the incoming velocity for
+landing/bounce links. Nested children retain their immediate spawner separately
+from the fighter, and spawn before that source's physics step. This keeps trails,
+item drops, and attached effects in the correct coordinate and script context.
+The projectile regressions render each family in both facings and check Napalm
+Shot speed/bounce, George kart speed, recovery independence, tear expiry,
+charged drops, and owner presence-flag cleanup. Forward exits use Training's
+outer playfield bounds; exact original camera-edge clipping is still approximate.
+
+Spawned combat entities retain their authored hit descriptors and hitboxes,
+independent movement, contact flags, conditional transitions, and per-tick scripts.
+This enables projectile normals, George variants, charged item drops, Argus lasers,
+and Lenny's explosion. Projectiles can be guarded, pause during super-freeze, and
+retain their combat state in practice saves. Ground and air throws capture,
+damage, release, and allow throw techs against the playable characters.
+
+Peacock shares the preview's reconstructed movement and hit-reaction physics.
+Complete original-engine parity, including projectile clashes/reflection,
+Lenny being struck by other attacks or damaging his owner, and DHC behavior,
+remains outside the shared engine's current support. Random child operands use
+a reproducible local generator so practice saves restore their sequence.
+
+The `peacock-moves` asset-backed test covers command entry and recovery in both
+facings, meter requirements, teleport travel, projectile and special damage,
+item charging, ground/air throws and techs, projectile guarding and save state,
+super-freeze, mixed-character hit detection, rendering, intros, movement,
+defense, tags, and assists. The Win32 character test executables use the same
+large-address setting as the preview to accommodate three loaded art sets.
+
+### Parasoul in Training
+
+Parasoul loads her 568 original moves and 69 child definitions, including sprites,
+collision boxes, hit descriptors, conditional links, and per-tick scripts. Either
+player can select her, including mixed teams with Filia, Cerebella, and Peacock.
+Movement, ground and air normals, command normals, throws and throw techs, guard,
+pushblock, burst, three intros, win/loss poses, tags, and assists use her own assets.
+
+Directions below are relative to Parasoul's facing. Charge back or down for at
+least 35 simulation frames before the finishing direction and attack button.
+
+| Move | Input |
+| --- | --- |
+| Napalm Shot | Hold back, then forward + punch |
+| Napalm Quake / Pillar / Trigger | Hold down, then up + light / medium / heavy kick |
+| Napalm Toss | Quarter-circle back + kick, on the ground or in the air |
+| Egret Call / Dive / Charge | Hold back, then forward + light / medium / heavy kick |
+| Silent Scope | Quarter-circle forward + two punches, one bar |
+| Motor Brigade | Quarter-circle forward + two kicks, one bar |
+| Inferno Brigade | Quarter-circle back + two punches, three bars |
+| Ground / air throw | Light punch + light kick |
+| Snapback | Quarter-circle forward + MP+MK or HP+HK, one bar |
+
+Shots leave set tears after contact; tossed tears arc into persistent tears.
+Napalm Quake detonates set tears, and overlapping friendly flame hitboxes ignite
+them. Their original explosion timelines and hit descriptors deliver damage.
+Egret Dive intercepts incoming script-backed projectiles. Egret Charge captures,
+carries, damages, and releases its victim using the soldier's own scripts and
+that victim's throw-stun table. Her supers use their original combat children.
+Assist options cover three Shot strengths, Quake/Pillar/Trigger, and the Egrets.
+Practice saves retain Parasoul playback, tears, projectiles, and child captures.
+
+Parasoul uses the preview's shared reconstructed physics. Full original-engine
+parity, projectile clashes/reflection, DHCs, exact tear limits and lifetime rules,
+and Egret Dive interactions with Filia's separate projectile implementation remain
+outside the current shared-engine support.
+
+The `parasoul-moves` asset-backed check covers normals and commands in both
+facings, short-charge rejection, meter costs, recovery, projectile and super
+damage, tears and detonation, Egret Charge capture/release, Egret Dive interception,
+throws, guard, pushblock, burst, all four playable partners, rendering, intros,
+saves, mixed-team tags, and assists.
+
+### Ms. Fortune in Training
+
+Ms. Fortune loads her 545 original moves and 56 child definitions. Both players
+can select her, with palettes, mixed teams, intros, victory/loss poses, guard,
+pushblock, burst, throws, tags, assists, and practice saves. Her headed and
+headless body artwork uses the authored alternate sprite layers and offsets.
+
+| Move | Input |
+| --- | --- |
+| Cat Scratch | Quarter-circle forward + punch; repeat for follow-ups |
+| Fiber Upper | Dragon-punch motion + kick |
+| El Gato | Quarter-circle back + kick in the air |
+| Head Roll / recall | Quarter-circle back + heavy punch on the ground |
+| Head Spike | Quarter-circle back + heavy punch in the air, with head attached |
+| Cat Scratch Fever | Quarter-circle forward + two punches, one bar |
+| Feral Edge | Quarter-circle back + two kicks in the air, one bar |
+| The Fifth of Dismember | Quarter-circle back + two punches, three bars |
+| Ground / air throw | Light punch + light kick |
+| Snapback | Quarter-circle forward + MP+MK or HP+HK, one bar |
+
+The head has its own persistent playback, input history, movement, hit descriptors,
+and combat state. It detaches on Head Roll or Head Spike, settles within the
+stage, accepts its authored head commands, and returns on recall. Heavy punch
+controls the detached head; directions and motion inputs select other head
+attacks. Body and head state survive practice saves and super-freeze. Head
+commands use reconstructed checks for parent animation tags. Recall travel and
+wall/ground handling use the preview's shared physics.
+
+The `msfortune-moves` asset-backed check covers normals, special and super entry,
+meter costs, recovery, combat damage in both facings, throws, head detachment,
+head attacks, recall, saves, rendering, defense, intros, mixed teams with the
+other four playable characters, tags, and assists. A rendered headed/headless
+comparison is available locally at `build/msfortune-check.png` after visual QA.
+
+Full original-engine parity remains incomplete: exact head hit reactions and
+owner damage transfer, recall cancels, head state across tags, original collision
+masks, and DHCs still require shared-engine reconstruction. Returning through a
+tag currently creates a fresh head/body state.
+
 ### Character effects and super-freeze
 
-Both fighters emit the original shared effects and spawned visual children from
+The playable fighters emit the original shared effects and spawned visual children from
 their FOIT scripts. The loader retains child defaults, spawn initialization,
 destruction flags, conditional per-tick scripts, and individual sequences within
 tiled textures. Effects use their authored positions, facing, scaling, rotation,
@@ -195,7 +400,7 @@ child creation and cleanup, offscreen effect rendering, frozen movement and
 projectiles, input-buffer expiry, and save-state restoration.
 
 ```powershell
-cmake -S . -B build -DSKULLGIRLS_TEST_DATA_DIR='C:\path\to\Skullgirls\data02'
+cmake -S . -B build -DSKULLGIRLS_TEST_DATA_DIR="$PWD/runtime/data02"
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
@@ -418,7 +623,7 @@ Run the input-condition regression test from the repository root. Set
 `SKULLGIRLS_TEST_DATA_DIR` to include the asset-backed move test.
 
 ```powershell
-cmake -S . -B build -DSKULLGIRLS_TEST_DATA_DIR='C:/path/to/Skullgirls/data02'
+cmake -S . -B build -DSKULLGIRLS_TEST_DATA_DIR="$PWD/runtime/data02"
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
