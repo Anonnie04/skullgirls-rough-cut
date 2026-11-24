@@ -1,4 +1,7 @@
 // Training's fighter and input handling are internal to the Windows preview.
+#ifndef _WIN32
+#define SKULLGIRLS_NO_MAIN
+#endif
 #include "../src/main_menu.cpp"
 
 #include <cstring>
@@ -431,7 +434,11 @@ void verify_stunt_double(Menu& menu, int filia)
 
 }
 
+#ifdef _WIN32
 int wmain(int argc, wchar_t** argv)
+#else
+int main(int argc, char** argv)
+#endif
 {
     if (argc != 2) return 2;
     try {

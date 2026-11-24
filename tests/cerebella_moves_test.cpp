@@ -1,3 +1,6 @@
+#ifndef _WIN32
+#define SKULLGIRLS_NO_MAIN
+#endif
 #include "../src/main_menu.cpp"
 
 #include <iostream>
@@ -534,7 +537,11 @@ void verify_visual_effects(Menu& menu)
 
 }
 
+#ifdef _WIN32
 int wmain(int argc, wchar_t** argv)
+#else
+int main(int argc, char** argv)
+#endif
 {
     if (argc != 2) return 2;
     Gdiplus::GdiplusStartupInput input;

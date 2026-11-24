@@ -1,3 +1,6 @@
+#ifndef _WIN32
+#define SKULLGIRLS_NO_MAIN
+#endif
 #include "../src/main_menu.cpp"
 #include <iostream>
 
@@ -291,7 +294,12 @@ void projectile_regressions(Menu& menu) {
 }
 
 }
-int wmain(int argc,wchar_t** argv) {
+#ifdef _WIN32
+int wmain(int argc, wchar_t** argv)
+#else
+int main(int argc, char** argv)
+#endif
+{
     if(argc!=2) return 2;
     Gdiplus::GdiplusStartupInput input; ULONG_PTR graphics=0;
     if(Gdiplus::GdiplusStartup(&graphics,&input,nullptr)!=Gdiplus::Ok) return 2;

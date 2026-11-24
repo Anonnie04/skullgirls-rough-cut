@@ -1,5 +1,6 @@
-﻿// Windows preview entry point, front-end screens, and Training Room simulation.
+// Shared preview screens and Training Room simulation, with native platform backends.
 
+#ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
 #include <shellapi.h>
@@ -7,6 +8,9 @@
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
+#else
+#include "linux_platform.hpp"
+#endif
 
 #include "sprite_asset.hpp"
 #include "menu_timings.hpp"
@@ -356,6 +360,7 @@ struct TiledAnimation {
     }
 };
 
+#ifdef _WIN32
 using Microsoft::WRL::ComPtr;
 
 struct StageGpu {
@@ -610,7 +615,11 @@ float4 shade(Pixel i) : SV_TARGET {
     }
 };
 
-// Owns the stage mesh and textures and draws them through Direct3D or the software fallback.
+#else
+#include "linux_stage_gpu.hpp"
+#endif
+
+// Owns the stage mesh and textures and draws them through the platform GPU backend or software.
 struct PracticeScene {
     static constexpr int width = 1280, height = 720;
     static constexpr int software_width = 480, software_height = 270;
@@ -8511,6 +8520,7 @@ struct Menu {
 };
 
 Menu* menu_instance = nullptr;
+#ifdef _WIN32
 HDC canvas_dc = nullptr;
 HBITMAP canvas_bitmap = nullptr;
 HGDIOBJ canvas_previous = nullptr;
@@ -8534,6 +8544,8 @@ bool create_canvas(HWND window) {
     canvas_previous = previous;
     return true;
 }
+
+#endif
 
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     auto& menu = *menu_instance;
@@ -8662,6 +8674,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         InvalidateRect(window, nullptr, FALSE);
         return 0;
     }
+    #ifdef _WIN32
     case WM_CREATE:
         return create_canvas(window) ? 0 : -1;
     case WM_ERASEBKGND:
@@ -8707,6 +8720,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         if (canvas_bitmap) DeleteObject(canvas_bitmap);
         if (canvas_dc) DeleteDC(canvas_dc);
         return DefWindowProcW(window, message, wparam, lparam);
+    #endif
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
@@ -8743,6 +8757,7 @@ bool render_practice_frame(std::chrono::steady_clock::time_point now,
 }
 }
 
+#ifdef _WIN32
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     struct GraphicsRuntime {
         ULONG_PTR token = 0;
@@ -8850,3 +8865,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
         }
     }
 }
+
+#else
+#include "linux_main.hpp"
+#endif

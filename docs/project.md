@@ -1,13 +1,57 @@
 ﻿# Skullgirls: Rough Cut
 
 An unofficial C++17 reconstruction of parts of the Skullgirls 2nd Encore
-Windows build. The project loads assets from a local runtime copy of the game
-data. Once prepared, the preview runs independently of the Steam installation.
+Windows build, with native Windows and Linux previews. The project loads assets
+from local game data. Windows preparation copies the archives; Linux preparation
+links the Steam installation.
 
-The Windows preview covers the title screen, main menu, Training Options,
+The preview covers the title screen, main menu, Training Options,
 character and palette selection, stage selection, and a playable Training
 Room for Filia, Cerebella, Peacock, Parasoul, Ms. Fortune, and Painwheel.
 The command-line tools inspect GFS archives and export sprite layers and frames.
+
+## Linux asset tools and Steam data
+
+From the repository root, with Bash, a C++17 compiler, pkg-config, SDL2, Cairo,
+and OpenGL development files installed (Manjaro/Arch packages: `gcc`,
+`pkgconf`, `sdl2`, `cairo`, and `libglvnd`):
+
+```bash
+./scripts/prepare-runtime.sh
+./scripts/build-linux.sh
+./runtime/skullgirls-main-menu
+./runtime/skullgirls-sprite ./runtime/data01 filia animations
+```
+
+Pass the Steam Skullgirls installation directory as the first argument to
+`prepare-runtime.sh` if it is installed elsewhere. The script links existing
+`data01` and `data02` directories into the ignored `runtime` folder. These links
+depend on the Steam installation remaining in place. The Linux Steam depot
+may have only `data01`; the runtime resolver accepts it and prefers `data02`
+when both are available. No missing depot is fabricated or downloaded.
+
+`build-linux.sh` builds the native playable `skullgirls-main-menu` preview,
+the three asset tools, and runs the three portable tests without requiring
+CMake. The Linux backend shares the Windows preview's menus, sprite decoding,
+and training simulation. SDL2 handles the window and keyboard events, OpenGL
+draws 3D stages and presents frames, and Cairo supplies the 2D drawing adapter.
+It does not require Wine. The installed Linux game's ELF imports show
+`libSDL2-2.0.so.0`, `SDL_GL_CreateContext`, `SDL_GL_SwapWindow`, SDL input and
+timing functions, and `libFAudio.so.0`. The remake follows that window/graphics
+approach; this is an independent backend, not a copy of the game's engine.
+
+To check rendering without opening a visible window, from `runtime`:
+
+```bash
+SDL_VIDEODRIVER=offscreen ./skullgirls-main-menu --smoke-test
+```
+
+This loads real game data, renders title/menu/selection/training/pause screens,
+and writes `linux-*.png` screenshots in the working directory. A working
+OpenGL implementation is required, including for offscreen checks.
+Run the existing seven combat suites with `./scripts/test-linux-assets.sh`.
+With CMake installed, the native preview and tests are also available through
+the normal CMake build on Linux.
 
 ## Build and run the preview
 

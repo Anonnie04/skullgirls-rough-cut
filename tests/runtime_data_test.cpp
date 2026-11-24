@@ -28,6 +28,10 @@ int main()
         try { skullgirls::resolve_runtime_data(root / "unused.exe", root / "missing"); }
         catch (const std::runtime_error&) { rejected = true; }
         check(rejected);
+        std::filesystem::rename(data, root / "runtime/data01");
+        check(skullgirls::resolve_runtime_data(root / "runtime/skullgirls-main-menu") == root / "runtime/data01");
+        check(skullgirls::resolve_runtime_data(root / "unused", root / "runtime") == root / "runtime/data01");
+        std::filesystem::rename(root / "runtime/data01", data);
         std::filesystem::remove(data / "core.gfs");
         check(!skullgirls::is_runtime_data(data));
         return 0;

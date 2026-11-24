@@ -15,18 +15,19 @@ inline bool is_runtime_data(const std::filesystem::path& directory)
 }
 
 // Resolve from the executable so launch shortcuts and other working directories
-// use the same portable assets. An explicit path can name data02 or its parent.
+// use the same portable assets. Steam's Linux depot uses data01; prefer data02
+// when both depots are available. An explicit path can name either or its parent.
 inline std::filesystem::path resolve_runtime_data(const std::filesystem::path& executable,
                                                  const std::filesystem::path& requested = {})
 {
     const auto find = [](const std::filesystem::path& root) -> std::filesystem::path {
-        for (const auto& directory : {root / "data02", root})
+        for (const auto& directory : {root / "data02", root / "data01", root})
             if (is_runtime_data(directory)) return std::filesystem::absolute(directory).lexically_normal();
         return {};
     };
     if (!requested.empty()) {
         if (const auto found = find(requested); !found.empty()) return found;
-        throw std::runtime_error("The selected folder does not contain the required data02 archives.");
+        throw std::runtime_error("The selected folder does not contain the required data01/data02 archives.");
     }
     // Check the executable's directory first, then nearby development and runtime folders.
     auto directory = std::filesystem::absolute(executable).parent_path();
@@ -37,8 +38,8 @@ inline std::filesystem::path resolve_runtime_data(const std::filesystem::path& e
         if (parent == directory) break;
         directory = parent;
     }
-    throw std::runtime_error("Local game data was not found. Prepare runtime/data01 and runtime/data02 "
-                             "with scripts/prepare-runtime.ps1, or pass a data02 folder on the command line.");
+    throw std::runtime_error("Local game data was not found. Prepare runtime with scripts/prepare-runtime.sh "
+                             "(Linux) or scripts/prepare-runtime.ps1 (Windows), or pass a game data folder.");
 }
 
 }

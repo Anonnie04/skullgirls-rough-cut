@@ -1,3 +1,6 @@
+#ifndef _WIN32
+#define SKULLGIRLS_NO_MAIN
+#endif
 #include "../src/main_menu.cpp"
 #include <iostream>
 #include <stdexcept>
@@ -64,75 +67,92 @@ void variants_and_skips(Menu& menu, std::initializer_list<const char*> names = {
         }
     }
 }
-void authored_events(Menu& menu) {
-    // Filia's falling/tripping intro uses an invisible body and child 10.
-    // A flat sprite timeline cannot reproduce this overlap.
-    select(menu, "filia", 1);
-    menu.practice_tick();
-    check(menu.practice_presentation.actors[0].intro->value(0xa4) == 0, "Filia's trip hides the body");
-    check(child(menu, 0, menu.filia_move_table.children[10]), "Filia's trip spawns its original proxy");
-    for (unsigned i = 1; i < 50; ++i) menu.practice_tick();
-    check(menu.practice_presentation.actors[0].intro->value(0xa4) == 1, "Filia becomes visible after the proxy handoff");
-    select(menu, "filia", 2);
-    bool hat = false;
-    for (unsigned i = 0; i < 140; ++i) {
+void authored_events(Menu& menu, std::string_view name) {
+    if (name == "filia") {
+        // Filia's falling/tripping intro uses an invisible body and child 10.
+        // A flat sprite timeline cannot reproduce this overlap.
+        select(menu, "filia", 1);
         menu.practice_tick();
-        hat |= child(menu, 0, menu.filia_move_table.children[11]) != nullptr;
+        check(menu.practice_presentation.actors[0].intro->value(0xa4) == 0, "Filia's trip hides the body");
+        check(child(menu, 0, menu.filia_move_table.children[10]), "Filia's trip spawns its original proxy");
+        for (unsigned i = 1; i < 50; ++i) menu.practice_tick();
+        check(menu.practice_presentation.actors[0].intro->value(0xa4) == 1, "Filia becomes visible after the proxy handoff");
+        select(menu, "filia", 2);
+        bool hat = false;
+        for (unsigned i = 0; i < 140; ++i) {
+            menu.practice_tick();
+            hat |= child(menu, 0, menu.filia_move_table.children[11]) != nullptr;
+        }
+        check(hat, "Filia's bow spawns the authored hat child");
+
     }
-    check(hat, "Filia's bow spawns the authored hat child");
+    if (name == "peacock") {
+        select(menu, "peacock", 3);
+        menu.practice_tick();
+        check(menu.practice_presentation.actors[0].intro->value(0xa4) == 0, "Peacock's car hides the body");
+        check(child(menu, 0, menu.peacock_assets.children[65]), "Peacock's car proxy survives outside an attack");
+        for (unsigned i = 1; i < 207; ++i) menu.practice_tick();
+        check(menu.practice_presentation.phase == Phase::intro, "Peacock waits for her authored car sequence");
 
-    select(menu, "peacock", 3);
-    menu.practice_tick();
-    check(menu.practice_presentation.actors[0].intro->value(0xa4) == 0, "Peacock's car hides the body");
-    check(child(menu, 0, menu.peacock_assets.children[65]), "Peacock's car proxy survives outside an attack");
-    for (unsigned i = 1; i < 207; ++i) menu.practice_tick();
-    check(menu.practice_presentation.phase == Phase::intro, "Peacock waits for her authored car sequence");
+    }
+    if (name == "msfortune") {
+        // The spawn script executes on the child (timer 105), while 0x91
+        // addresses its spawner (timer 88). Check both, before reassembly.
+        select(menu, "msfortune", 1);
+        menu.practice_tick();
+        auto& pieces = *menu.practice_presentation.actors[0].intro;
+        const auto* proxy = child(menu, 0, menu.msfortune_assets.children[40]);
+        check(proxy && proxy->value(0x81) == 104 && pieces.value(0x81) == 88, "Pieces proxy and body have distinct native timers");
+        check(pieces.value(0x8b) == 1, "Pieces intro begins headless");
+        for (unsigned i = 1; i < 200; ++i) menu.practice_tick();
+        check(menu.practice_presentation.phase == Phase::intro, "Pieces reassembles before the other intro finishes");
+        check(pieces.value(0x8b) == 0 && pieces.value(0xa4) == 1, "The script restores the head and visibility before gameplay");
 
-    // The spawn script executes on the child (timer 105), while 0x91
-    // addresses its spawner (timer 88). Check both, before reassembly.
-    select(menu, "msfortune", 1);
-    menu.practice_tick();
-    auto& pieces = *menu.practice_presentation.actors[0].intro;
-    const auto* proxy = child(menu, 0, menu.msfortune_assets.children[40]);
-    check(proxy && proxy->value(0x81) == 104 && pieces.value(0x81) == 88, "Pieces proxy and body have distinct native timers");
-    check(pieces.value(0x8b) == 1, "Pieces intro begins headless");
-    for (unsigned i = 1; i < 200; ++i) menu.practice_tick();
-    check(menu.practice_presentation.phase == Phase::intro, "Pieces reassembles before the other intro finishes");
-    check(pieces.value(0x8b) == 0 && pieces.value(0xa4) == 1, "The script restores the head and visibility before gameplay");
+        select(menu, "msfortune", 2);
+        for (unsigned i = 0; i < 25; ++i) menu.practice_tick();
+        check(menu.practice_presentation.actors[0].intro->value(0xa4) == 0 &&
+            child(menu, 0, menu.msfortune_assets.children[39]), "Nyawn hides the body while its proxy animates");
+        for (unsigned i = 25; i < 120; ++i) menu.practice_tick();
+        check(menu.practice_presentation.actors[0].intro->value(0xa4) == 1, "Move changes restore visible idle after Nyawn");
 
-    select(menu, "msfortune", 2);
-    for (unsigned i = 0; i < 25; ++i) menu.practice_tick();
-    check(menu.practice_presentation.actors[0].intro->value(0xa4) == 0 &&
-        child(menu, 0, menu.msfortune_assets.children[39]), "Nyawn hides the body while its proxy animates");
-    for (unsigned i = 25; i < 120; ++i) menu.practice_tick();
-    check(menu.practice_presentation.actors[0].intro->value(0xa4) == 1, "Move changes restore visible idle after Nyawn");
-
-    // Save/restore must preserve the live wait and stable spawn references.
-    select(menu, "msfortune", 1);
-    for (unsigned i = 0; i < 35; ++i) menu.practice_tick();
-    const auto timer = menu.practice_presentation.actors[0].intro->value(0x81);
-    menu.save_or_restore_practice(false);
-    for (unsigned i = 0; i < 35; ++i) menu.practice_tick();
-    menu.save_or_restore_practice(true);
-    check(menu.practice_presentation.actors[0].intro->value(0x81) == timer, "Practice save restores the live intro clock");
-    for (unsigned i = 0; i < 500 && menu.practice_presentation.phase == Phase::intro; ++i) menu.practice_tick();
-    ready(menu, "msfortune");
+        // Save/restore must preserve the live wait and stable spawn references.
+        select(menu, "msfortune", 1);
+        for (unsigned i = 0; i < 35; ++i) menu.practice_tick();
+        const auto timer = menu.practice_presentation.actors[0].intro->value(0x81);
+        menu.save_or_restore_practice(false);
+        for (unsigned i = 0; i < 35; ++i) menu.practice_tick();
+        menu.save_or_restore_practice(true);
+        check(menu.practice_presentation.actors[0].intro->value(0x81) == timer, "Practice save restores the live intro clock");
+        for (unsigned i = 0; i < 500 && menu.practice_presentation.phase == Phase::intro; ++i) menu.practice_tick();
+        ready(menu, "msfortune");
+    }
 }
 }
 
-int wmain(int argc, wchar_t** argv) {
+#ifdef _WIN32
+int wmain(int argc, wchar_t** argv)
+#else
+int main(int argc, char** argv)
+#endif
+{
     if (argc != 2) return 2;
     try {
-        { Menu menu;
-        menu.game_data = argv[1];
-        menu.load_movement_frames(); menu.load_peacock(); menu.load_msfortune(); menu.load_cerebella(); menu.load_parasoul();
-        menu.practice_width = 1700; menu.practice_height = 900; menu.practice_floor = 145;
-        menu.practice_starts = {700, 1000};
-        authored_events(menu);
-        variants_and_skips(menu); }
-        { Menu menu; menu.game_data=argv[1];menu.load_movement_frames();menu.load_painwheel();
-          menu.practice_width=1700;menu.practice_height=900;menu.practice_floor=145;menu.practice_starts={700,1000};
-          variants_and_skips(menu,{"painwheel"}); }
+        // Keep only one fighter's extra assets resident at a time. This also
+        // lets the Linux suite run alongside a desktop on machines with 8 GB RAM.
+        for (const auto* name : {"filia", "peacock", "msfortune", "cerebella", "parasoul", "painwheel"}) {
+            Menu menu;
+            menu.game_data = argv[1];
+            menu.load_movement_frames();
+            if (std::string_view(name) == "peacock") menu.load_peacock();
+            if (std::string_view(name) == "msfortune") menu.load_msfortune();
+            if (std::string_view(name) == "cerebella") menu.load_cerebella();
+            if (std::string_view(name) == "parasoul") menu.load_parasoul();
+            if (std::string_view(name) == "painwheel") menu.load_painwheel();
+            menu.practice_width = 1700; menu.practice_height = 900; menu.practice_floor = 145;
+            menu.practice_starts = {700, 1000};
+            authored_events(menu, name);
+            variants_and_skips(menu, {name});
+        }
         std::cout << "All six characters' intro variants, child events, visibility, head restoration, skips, and saves passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
