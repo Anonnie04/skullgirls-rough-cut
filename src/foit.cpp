@@ -313,7 +313,14 @@ std::uint16_t read_animation_ticks(Reader& reader, FoitAnimationFrame* frame = n
                 else if (frame) frame->spawns.push_back(std::move(spawn));
             } while (reader.number(1));
         }
-        if (payloads & 4) reader.take(4 * reader.number(1));
+        if (payloads & 4) {
+            const auto count = reader.number(1);
+            for (unsigned i = 0; i < count; ++i) {
+                const auto id = reader.number(4);
+                if (variant) variant->sounds.push_back(id);
+                else if (frame) frame->sounds.push_back(id);
+            }
+        }
         if (!reader.number(1)) return *ticks;
         if (frame) {
             variant = &frame->variants.emplace_back();
@@ -339,7 +346,7 @@ void read_move_table(Reader& reader, std::size_t file_size, std::size_t sprite_c
         if (flags & ~15u) throw std::runtime_error("Invalid FOIT animation flags");
         if (flags & 12) reader.take(4);
         reader.take(1);
-        if (flags & 2) reader.take(4 * reader.number(1));
+        if (flags & 2) reader.take(4 * reader.number(1)); // Move category hashes, not sound events.
         const auto transitions = reader.number(2);
         const auto successor = reader.number(2);
         if (successor >= count) throw std::runtime_error("Invalid FOIT animation successor");

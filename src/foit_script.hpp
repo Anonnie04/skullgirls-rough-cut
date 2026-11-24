@@ -23,6 +23,7 @@ std::optional<unsigned> match_foit_condition(const FoitCondition& condition, con
                                              bool facing_right, const FoitScriptState& state,
                                              unsigned oldest_trigger = FoitInputHistory{}.size() - 1);
 void apply_foit_assignment(const FoitExpression& expression, FoitScriptState& state);
+bool test_foit_expressions(const std::vector<FoitExpression>& expressions, const FoitScriptState& state);
 void apply_foit_script(const std::vector<FoitExpression>& expressions, FoitScriptState& state,
                        const FoitScriptState& defaults);
 

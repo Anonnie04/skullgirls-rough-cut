@@ -181,6 +181,15 @@ std::optional<unsigned> match_foit_condition(const FoitCondition& condition, con
     return std::nullopt;
 }
 
+bool test_foit_expressions(const std::vector<FoitExpression>& expressions, const FoitScriptState& state)
+{
+    for (const auto& expression : expressions) {
+        const auto result = compare(expression, state);
+        if (!result || !*result) return false;
+    }
+    return true;
+}
+
 void apply_foit_assignment(const FoitExpression& expression, FoitScriptState& state)
 {
     if (expression.comparison) return;

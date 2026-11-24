@@ -25,6 +25,10 @@ struct FoitVisualState {
     unsigned next_record = 0;
     unsigned buffered_buttons = 0, buffer_ticks = 0;
     std::vector<FoitVisualRequest> pending;
+    std::vector<std::pair<std::uint32_t, FoitScriptState>> pending_sounds;
+    void sound(const std::vector<std::uint32_t>& ids, const FoitScriptState& context) {
+        for (auto id : ids) if (pending_sounds.size() < 128) pending_sounds.emplace_back(id, context);
+    }
 
     void enter(const FoitAnimationFrame& frame, const FoitScriptState& context,
                const FoitInputHistory& inputs, bool facing_right) {
@@ -42,10 +46,12 @@ struct FoitVisualState {
         const auto spawn = [&](const auto& entries) {
             for (const auto& entry : entries) pending.push_back({0, &entry, 0, 0, 1, false, context});
         };
+        sound(frame.sounds, context);
         apply(frame.script);
         spawn(frame.spawns);
         for (const auto& variant : frame.variants) {
             if (!match_foit_condition(variant.condition, inputs, facing_right, context)) continue;
+            sound(variant.sounds, context);
             apply(variant.script);
             spawn(variant.spawns);
         }
@@ -312,6 +318,7 @@ struct FoitEffectPlayback {
                 } else if (data.script_flags & (4 | 8)) {
                     for (auto i : {0xa0, 0xa1, 0x9e, 0x9f}) state.variables[i] = saved.variables[i];
                 }
+                if (fresh) visual.sound(data.sounds, state);
                 if (fresh || combat_entity) {
                     for (const auto& spawn : data.spawns) {
                         FoitVisualRequest request{0, &spawn, 0, 0, 1, false, state};
@@ -441,7 +448,7 @@ struct FoitEffectPlayback {
             const bool base_matches=matches(tick_override->condition,parent);
             const auto execute = [&](const auto& data) {
                 FoitAnimationFrame events{};
-                events.script=data.script;
+                events.script=data.script; events.sounds=data.sounds;
                 visual.enter(events,state,inputs,input_facing.value_or(facing_right));
                 for (const auto& spawn : data.spawns)
                     visual.pending.push_back({0, &spawn, 0, 0, 1, false, state});

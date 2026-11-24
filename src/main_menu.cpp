@@ -13,6 +13,8 @@
 #endif
 
 #include "sprite_asset.hpp"
+#include "audio.hpp"
+#include "audio_playback.hpp"
 #include "menu_timings.hpp"
 #include "title_scene.hpp"
 #include "fighter_select.hpp"
@@ -33,6 +35,8 @@
 #include "filia_team.hpp"
 #include "gfs.hpp"
 #include "runtime_data.hpp"
+#include "hud_portrait.hpp"
+#include "stage_select.hpp"
 #include "stage_scene.hpp"
 #include <tuple>
 #include <iomanip>
@@ -191,41 +195,6 @@ struct Texture {
     }
 };
 
-struct HudPortraitLayer {
-    unsigned width, height;
-    skullgirls::SpriteBytes pixels;
-};
-
-HudPortraitLayer read_hud_portrait_layer(const skullgirls::SpriteBytes& bytes) {
-    if (bytes.size() < 128 || bytes[0] != 10 || bytes[2] != 1 || bytes[3] != 8 || bytes[65] != 1)
-        throw std::runtime_error("Unsupported HUD portrait PCX");
-    const auto word = [&](unsigned offset) { return unsigned(bytes[offset]) | (unsigned(bytes[offset + 1]) << 8); };
-    const unsigned width = word(8) - word(4) + 1, height = word(10) - word(6) + 1;
-    const unsigned pitch = word(66);
-    if (!width || !height || pitch < width || pitch > 2048 || height > 2048)
-        throw std::runtime_error("Invalid HUD portrait size");
-    HudPortraitLayer layer{width, height, {}};
-    layer.pixels.reserve(width * height);
-    std::size_t offset = 128;
-    for (unsigned y = 0; y < height; ++y) {
-        for (unsigned x = 0; x < pitch;) {
-            if (offset >= bytes.size()) throw std::runtime_error("Truncated HUD portrait PCX");
-            auto pixel = bytes[offset++];
-            unsigned count = 1;
-            if ((pixel & 0xc0) == 0xc0) {
-                count = pixel & 0x3f;
-                if (!count || count > pitch - x || offset >= bytes.size())
-                    throw std::runtime_error("Invalid HUD portrait pixel run");
-                pixel = bytes[offset++];
-            }
-            if (x < width) layer.pixels.insert(layer.pixels.end(), std::min(count, width - x), pixel);
-            x += count;
-        }
-    }
-    return layer;
-}
-
-// Reassembles atlas tiles into frames that can be drawn by tick or by frame index.
 struct TiledAnimation {
     struct Frame {
         unsigned first, count, ticks;
@@ -957,6 +926,7 @@ constexpr skullgirls::NormalFrame air_throw_tech[] = {
 
 // Owns both the front-end selection state and the active Training session.
 struct Menu {
+    std::shared_ptr<skullgirls::AudioOutput> audio;
     Texture training_frame, player_header, select_header, select_film, select_overlay, select_side,
             select_pedestal, select_cursor, select_cursor_p2, team_frame;
     std::array<Texture, roster.size()> portraits;
@@ -1030,13 +1000,39 @@ struct Menu {
         std::unique_ptr<Texture> preview;
     };
     std::vector<Stage> stages;
-    std::size_t stage_index = 0;
+    skullgirls::StageSelectState stage_selection;
     std::vector<std::vector<std::size_t>> stage_groups;
-    std::size_t stage_variant = 0;
+    std::vector<std::size_t> random_stages;
+    skullgirls::StageSelectLayout stage_layout;
+    const Texture* previous_stage_preview = nullptr;
+    std::chrono::steady_clock::time_point stage_entered{}, stage_switched{};
     Texture stage_bar, stage_arrow, stage_variant_arrow, stage_header;
 
     const Stage& current_stage() const {
-        return stages[stage_groups[stage_index][stage_variant]];
+        return stages.at(stage_selection.selected(stage_groups));
+    }
+
+    std::wstring stage_selection_name() const {
+        return stage_selection.random() && training != TrainingView::stage_confirmed ? L"Random" : current_stage().name;
+    }
+
+    const Texture* selected_stage_preview() const {
+        if (stage_selection.random() && training == TrainingView::stage_confirmed && stage_selection.resolved)
+            return stages[*stage_selection.resolved].preview.get();
+        const auto index = stage_selection.preview(stage_groups);
+        return index ? stages[*index].preview.get() : nullptr;
+    }
+
+    void enter_stage_select() {
+        training = TrainingView::stage_select;
+        stage_selection.reset();
+        previous_stage_preview = nullptr;
+        stage_entered = stage_switched = std::chrono::steady_clock::now();
+    }
+
+    void confirm_stage_selection() {
+        static std::mt19937 generator(std::random_device{}());
+        stage_selection.confirm(stage_groups, random_stages, generator);
     }
 
     std::filesystem::path game_data;
@@ -3446,9 +3442,87 @@ struct Menu {
         });
     }
 
+    const char* practice_audio_bank(const skullgirls::FoitMoveTable& root) const {
+        return &root == &filia_move_table ? "filia" : &root == &cerebella_assets ? "cerebella" :
+            &root == &peacock_assets ? "peacock" : &root == &parasoul_assets ? "parasoul" :
+            &root == &msfortune_assets ? "msfortune" : &root == &painwheel_assets ? "painwheel" : "hitspark";
+    }
+
+    void dispatch_practice_sound(const skullgirls::FoitMoveTable& root, std::uint32_t id,
+                                const skullgirls::FoitScriptState& context, std::size_t side,
+                                std::size_t slot, float x, std::uint64_t entity_id) {
+        if (!audio) return;
+        struct Target {
+            std::uint64_t identity = 0, entity = 0;
+            std::size_t side = 0, slot = 0;
+            std::string bank;
+            float x = 0;
+            skullgirls::FoitScriptState state;
+            skullgirls::FoitScriptState* live = nullptr;
+        };
+        const auto fighter_target = [&](std::size_t team, std::size_t member) -> std::optional<Target> {
+            if (member >= fighters[team].size()) return std::nullopt;
+            auto* fighter = &practice_players[team];
+            if (member != practice_teams[team].active_slot) {
+                auto& assist = practice_teams[team].assist;
+                if (!assist || assist->actor.slot != member) return std::nullopt;
+                fighter = &assist->fighter;
+            }
+            auto* state = fighter->scripted() ? &fighter->scripted()->state : &fighter->script_state;
+            if (member == practice_teams[team].active_slot && practice_presentation.actors[team].intro)
+                state = &practice_presentation.actors[team].intro->state;
+            return Target{1 + team * 3 + member, 0, team, member, roster[fighters[team][member]],
+                          fighter->practice_x, *state, state};
+        };
+        const auto effect_target = [&](skullgirls::FoitEffectPlayback& effect) {
+            return Target{16 + effect.entity_id, effect.entity_id, effect.side, effect.palette_slot,
+                          practice_audio_bank(*effect.root), effect.x, effect.state, &effect.state};
+        };
+        Target initial{entity_id ? 16 + entity_id : 1 + side * 3 + slot, entity_id,
+                       side, slot, practice_audio_bank(root), x, context, nullptr};
+        if (entity_id) {
+            const auto found = std::find_if(practice_effects.begin(), practice_effects.end(),
+                [&](const auto& effect) { return effect.entity_id == entity_id; });
+            if (found != practice_effects.end()) initial.live = &found->state;
+        } else if (auto target = fighter_target(side, slot)) initial.live = target->live;
+        skullgirls::dispatch_sound_events(initial, id, [&](Target& target, std::uint32_t event) {
+            const auto opposite = 1 - target.side;
+            const auto enemy_slot = practice_teams[opposite].active_slot;
+            const std::string self = target.bank;
+            const std::string enemy = enemy_slot < fighters[opposite].size() ? roster[fighters[opposite][enemy_slot]] : "";
+            // The source resolver hashes the entity asset name. A target
+            // operand stays literal when no
+            // captured target is represented by this simulation.
+            skullgirls::AudioEventNames names{self, enemy,
+                roster[fighters[target.side][practice_teams[target.side].active_slot]], ""};
+            if (target.live && target.live->variables[0x98]) target.state.variables[0x98] = target.live->variables[0x98];
+            const auto result = audio->event(target.bank, event, target.state,
+                std::clamp((target.x - practice_width * 0.5f) / 640.f, -1.f, 1.f),
+                unsigned(target.side * 3 + target.slot), names);
+            if (result.script_value && target.live) target.live->variables[0x98] = *result.script_value;
+            return result;
+        }, [&](const Target& source, unsigned destination) {
+            std::vector<Target> targets;
+            if (destination == 4) {
+                for (auto& effect : practice_effects)
+                    if (effect.alive && effect.root && effect.side == source.side && effect.palette_slot == source.slot &&
+                        effect.entity_id != source.entity && (!source.entity || effect.spawner_id == source.entity))
+                        targets.push_back(effect_target(effect));
+            } else {
+                const auto team = destination == 2 ? 1 - source.side : source.side;
+                const auto member = destination == 2 || destination == 3 ? practice_teams[team].active_slot : source.slot;
+                if (auto target = fighter_target(team, member)) targets.push_back(std::move(*target));
+            }
+            return targets;
+        });
+    }
+
     void spawn_practice_visuals(skullgirls::FoitVisualState& visual, const skullgirls::FoitMoveTable& root,
                                std::size_t side, std::size_t slot, float x, float y, bool facing,
                                std::uint64_t instance, std::uint64_t spawner_id = 0) {
+        auto sounds = std::exchange(visual.pending_sounds, {});
+        for (const auto& sound : sounds)
+            dispatch_practice_sound(root, sound.first, sound.second, side, slot, x, spawner_id);
         auto pending = std::exchange(visual.pending, {});
         for (const auto& request : pending) {
             if (practice_effects.size() >= 512) break;
@@ -3843,7 +3917,13 @@ struct Menu {
     ~Menu() { if (practice_load.valid()) practice_load.wait(); }
 
     // Load the fighters and stage in the background while the window draws the loading animation.
+    std::string practice_music_intro, practice_music_loop;
     void start_practice() {
+        if (audio) {
+            audio->stop_combat(); audio->prepare_character("hitspark");
+            for (const auto& team : fighters) for (auto id : team) audio->prepare_character(roster[id]);
+        }
+        confirm_stage_selection();
         loading_started = std::chrono::steady_clock::now();
         practice_scene.reset();
         practice_background.reset();
@@ -3872,6 +3952,7 @@ struct Menu {
         skullgirls::SpriteArchive stages_archive(game_data / "stages.gfs");
         const auto& level = current_stage().level;
         const auto config = stages_archive.read("stages/" + level + ".lvl");
+        practice_music_intro.clear(); practice_music_loop.clear();
         std::istringstream stream(std::string(config.begin(), config.end()));
         std::string background_asset, texture_subpath, world = level;
         std::map<std::string, std::string> replacements;
@@ -3886,7 +3967,9 @@ struct Menu {
             std::istringstream row(line);
             std::string key;
             row >> key;
-            if (key == "StageSize:") row >> width >> height;
+            if (key == "Music_Intro") row >> practice_music_intro;
+            else if (key == "Music_Loop") row >> practice_music_loop;
+            else if (key == "StageSize:") row >> width >> height;
             else if (key == "BottomClearance:") row >> floor;
             else if (key == "Start1:") row >> starts[0];
             else if (key == "Start2:") row >> starts[1];
@@ -3972,6 +4055,10 @@ struct Menu {
     // Rethrow loading errors and initialize rendering on the window thread before starting the intro.
     void finish_practice(HWND window) {
         practice_load.get();
+        if (audio) {
+            if (!practice_music_intro.empty() && !practice_music_loop.empty()) audio->music(practice_music_intro, practice_music_loop);
+            else audio->stage_music(current_stage().id, current_stage().parent);
+        }
         if (practice_scene) practice_scene->initialize_gpu(window);
         practice_stage_tick = 0;
         practice_paused = false;
@@ -4697,6 +4784,7 @@ struct Menu {
     }
 
     void reset_practice() {
+        if (audio) audio->stop_combat();
         practice_effects.clear();
         super_flash_amount = 0;
         for (std::size_t i = 0; i < practice_assist_options.size(); ++i) {
@@ -4857,7 +4945,9 @@ struct Menu {
             }
             practice_background.reset();
             practice_scene.reset();
-            training = training_page ? TrainingView::stage_select : TrainingView::none;
+            if (audio) { audio->stop_combat(); audio->music(training_page ? "select_intro" : "menu_intro", training_page ? "select_loop" : "menu_loop"); }
+            if (training_page) enter_stage_select();
+            else training = TrainingView::none;
         }
         pause_page.reset();
         return true;
@@ -6618,27 +6708,18 @@ struct Menu {
             const auto fighter = fighters[side][slot];
             const auto name = "ui/palettized_hud_art/character_" + std::string(roster[fighter]);
             const auto load = [&](const char* suffix) {
-                return read_hud_portrait_layer(assets.read(name + suffix));
+                return skullgirls::read_hud_portrait_layer(assets.read(name + suffix));
             };
             const auto index = load("_colors.pcx");
             const auto shade = load("_shade.pcx");
             const auto lines = load("_lines.pcx");
-            if (index.width != shade.width || index.width != lines.width ||
-                index.height != shade.height || index.height != lines.height)
-                throw std::runtime_error("Mismatched HUD portrait layers");
+            const auto& palette = palettes[fighter][locked_colors[side][slot]].colors;
+            const auto pixels = skullgirls::colorize_hud_portrait(index, shade, lines, palette);
             skullgirls::SelectFrame portrait{};
             portrait.width = index.width;
             portrait.height = index.height;
-            portrait.pixels.resize(index.pixels.size() * 3);
-            for (std::size_t i = 0; i < index.pixels.size(); ++i) {
-                const unsigned black = (255 - lines.pixels[i]) * 7 / 255;
-                const unsigned light = shade.pixels[i] * 31 / 255;
-                portrait.pixels[i * 3] = index.pixels[i] || black;
-                portrait.pixels[i * 3 + 1] = static_cast<BYTE>(black * 32 + light);
-                // Portrait color groups are encoded five PCX indices apart.
-                portrait.pixels[i * 3 + 2] = index.pixels[i] ? index.pixels[i] / 5 + 1 : 0;
-            }
-            hud_portraits[side][slot] = make_fighter_bitmap(portrait, fighter, locked_colors[side][slot]);
+            hud_portraits[side][slot] = make_fighter_bitmap(portrait,
+                [&](std::size_t pixel) { return pixels[pixel]; });
         }
     }
 
@@ -6833,31 +6914,40 @@ struct Menu {
                 dc.TranslateTransform(1280, 0);
                 dc.ScaleTransform(-1, 1);
             }
+            // P1_Bar is at -5; mirroring its 562-wide group gives P2_Bar at 723.
+            dc.TranslateTransform(-5, 0);
             // InGame.gbs P1/P2_F1–F3 health objects and the two roster-size covers.
             const auto& team = practice_teams[side];
             const auto& stats = hud_stats[side];
             const auto count = fighters[side].size();
-            tile(0, 592, 579, 1165, 663, {165, 52, 390, 56});
+            tile(0, 592, 579, 1165, 663, {170, 52, 382, 56});
             tile(0, 592, 752, 1435, 1006, {4, 13, 562, 169});
-            const auto draw_life = [&](const PracticeLife& health, Gdiplus::RectF bounds,
-                                       int fill_top, int fill_right, int fill_height, int damage_top) {
+            const auto draw_life = [&](const PracticeLife& health, Gdiplus::RectF bounds, unsigned row) {
                 const auto width = [&](float value) {
                     return bounds.Width * std::clamp(value / 15500.0f, 0.0f, 1.0f);
                 };
                 const float fill = width(health.displayed_life);
                 const float trail = width(health.damage_trail);
-                const auto layer = [&](int top, float visible) {
+                const auto layer = [&](int left, int top, int right, int bottom, float visible) {
                     if (visible <= 0) return;
                     const auto clip = dc.Save();
                     dc.SetClip(Gdiplus::RectF(bounds.X, bounds.Y, visible, bounds.Height),
                                Gdiplus::CombineModeIntersect);
-                    tile(1, 825, top, fill_right, top + fill_height, bounds);
+                    tile(0, left, top, right, bottom, bounds);
                     dc.Restore(clip);
                 };
-                layer(damage_top, trail);
-                layer(fill_top, fill);
+                // Original black covers, red damage trail, and distinct main,
+                // middle and top energy gradients from InGame.gbs's atlas table.
+                if (row == 0) tile(0, 592, 703, 1437, 748, bounds);
+                else tile(0, 592, 667, 1236, 699, bounds);
+                layer(1169, 579, 1732, 609, trail);
+                if (row == 0) layer(1169, 613, 1732, 643, fill);
+                else if (row == 1) layer(1593, 226, 2022, 247, fill);
+                else layer(1593, 201, 2022, 222, fill);
+                if (row == 0 && trail - fill > 0.5f && fill > 0)
+                    tile(0, 581, 492, 612, 549, {bounds.X + fill - 10.5f, 78.75f, 21, 38});
             };
-            draw_life(stats, {175, 84, 375, 20}, 1559, 1388, 30, 1643);
+            draw_life(stats, {175, 84, 375, 20}, 0);
             if (count == 1)
                 tile(0, 1441, 703, 1993, 747, {167, 54, 368, 29});
             else if (count == 2)
@@ -6878,14 +6968,14 @@ struct Menu {
                 if (slot == team.active_slot) continue;
                 const bool middle = reserve_row++ == 0;
                 draw_life(team.health[slot], {middle ? 250.0f : 234.0f, middle ? 69.0f : 55.0f, 286, 14},
-                    middle ? 1593 : 1677, 1254, 21, 1618);
+                    middle ? 1 : 2);
                 tile(0, 651, 447, 693, 485, {middle ? 233.0f : 220.0f, middle ? 62.0f : 47.0f, 28, 25});
                 const auto eye = std::find_if(std::begin(eyes), std::end(eyes), [&](const auto& entry) {
                     return entry.fighter == roster[fighters[side][slot]];
                 });
                 if (eye != std::end(eyes))
                     tile(eye->page, eye->x, eye->y, eye->x + 88, eye->y + 16,
-                         {middle ? 164.0f : 157.0f, middle ? 70.5f : 57.0f, 88 * 2.0f / 3, 16 * 2.0f / 3});
+                         {middle ? 173.0f : 166.0f, middle ? 70.5f : 57.0f, 59, 11});
             }
             if (count > 1) {
                 const bool available = !team.assist && !team.tag && !team.departing &&
@@ -6893,19 +6983,28 @@ struct Menu {
                 if (available) tile(0, 789, 526, 851, 559, {205.59f, 105, 41, 22});
                 else tile(1, 873, 66, 934, 99, {205.59f, 105, 41, 22});
             }
-            const Gdiplus::RectF arc(4, 9, 157, 163);
+            const auto stock = std::min(practice_players[side].tension, 5u);
+            // The authored CCRA SuperBar_0..5 objects use these stock colors.
+            constexpr Gdiplus::ARGB meter_colors[] = {
+                0xff000000, 0xff008000, 0xff40e0d0, 0xff8a2be2, 0xfff08080, 0xffffa500
+            };
+            const Gdiplus::RectF arc(9.38f, -8.864f, 178.89f, 181.11f);
             Gdiplus::Pen meter_edge(Gdiplus::Color(255, 64, 30, 16), 13);
-            Gdiplus::Pen meter(Gdiplus::Color(255, 230, 89, 17), 9);
-            Gdiplus::Pen glint(Gdiplus::Color(255, 255, 206, 71), 3);
-            for (auto* pen : {&meter_edge, &meter, &glint}) dc.DrawArc(pen, arc, 15, 195);
-            tile(0, 88, 864, 325, 1092, {7, 4, 158, 152});
-            const auto& portrait = hud_portraits[side][practice_teams[side].active_slot];
+            Gdiplus::Pen meter{Gdiplus::Color(meter_colors[stock]), 9};
+            dc.DrawArc(&meter_edge, arc, 44, 155);
+            dc.DrawArc(&meter, arc, 44, 155);
+            // PortraitBg has an opaque black interior; the palettized portrait
+            // follows it in the original scene's draw order.
+            tile(0, 88, 864, 325, 1092, {17, 8, 158, 152});
+            const auto& portrait = hud_portraits[side][team.active_slot];
             if (portrait) {
                 const auto portrait_clip = dc.Save();
-                dc.SetClip(Gdiplus::RectF(20, 0, 143, 118));
-                dc.DrawImage(portrait.get(), Gdiplus::RectF(-6, -162, 202, 288));
+                dc.SetClip(Gdiplus::RectF(17, 0, 158, 114));
+                dc.DrawImage(portrait.get(), Gdiplus::RectF(-3, -174, 202, 288));
                 dc.Restore(portrait_clip);
             }
+            for (const float x : {462.0f, 500.0f})
+                tile(0, 1341, 515, 1396, 570, {x, 125, 37, 37});
             struct CharacterHudArt {
                 std::string_view fighter;
                 std::array<int, 5> symbol, name; // atlas page, left, top, right, bottom
@@ -6939,25 +7038,25 @@ struct Menu {
             const auto& art = artwork != std::end(character_art) ? *artwork :
                 *std::find_if(std::begin(character_art), std::end(character_art),
                     [](const auto& entry) { return entry.fighter == "unknown"; });
-            tile(art.symbol[0], art.symbol[1], art.symbol[2], art.symbol[3], art.symbol[4], {19, 18, 48, 48});
-            tile(0, 88, 1370, 362, 1415, {29, 124, 118, 20});
+            tile(art.symbol[0], art.symbol[1], art.symbol[2], art.symbol[3], art.symbol[4], {30, 21, 51, 51});
+            tile(0, 88, 1370, 362, 1415, {39, 128, 118, 20});
             dc.Restore(mirrored);
-            const auto stock = practice_players[side].tension;
             constexpr int digits[][2] = {{1341, 300}, {538, 1043}, {674, 1043},
                 {2, 1247}, {2, 1383}, {2, 1519}};
             const auto* digit = digits[stock];
             tile(stock ? 1u : 0u, digit[0], digit[1], digit[0] + 132, digit[1] + 132,
-                {side ? 1080.0f : 156.0f, 104, 44, 44});
-            const float name_x = side ? 1136.0f : 36.0f;
-            tile(art.name[0], art.name[1], art.name[2], art.name[3], art.name[4], {name_x, 109, 108, 50});
+                {side ? 1078.0f : 158.0f, 101, 44, 44});
+            const float name_x = side ? 1133.0f : 39.0f;
+            tile(art.name[0], art.name[1], art.name[2], art.name[3], art.name[4], {name_x, 113, 108, 50});
 
             const float stats_x = side ? 722.0f : 199.0f;
             const auto attack_data = training_value("OPT_STR_ATTACK_DATA", 1);
             if (!attack_data || practice_presentation.phase != PracticePresentation::Phase::none) continue;
             Gdiplus::SolidBrush backing(Gdiplus::Color(148, 11, 12, 14));
             Gdiplus::SolidBrush line(Gdiplus::Color(210, 217, 208, 179));
-            dc.FillRectangle(&backing, stats_x, 130.0f, 368.0f, 100.0f);
-            dc.FillRectangle(&line, stats_x, 230.0f, 368.0f, 2.0f);
+            // Keep training readouts below the portrait, assist light and win pips.
+            dc.FillRectangle(&backing, stats_x, 184.0f, 368.0f, 100.0f);
+            dc.FillRectangle(&line, stats_x, 284.0f, 368.0f, 2.0f);
             const auto life = L"Life:     " + std::to_wstring(stats.life) + L" / 15500";
             const auto damage = L"Hit:    " + std::to_wstring(stats.last_hit) + L"   / Dmg: " +
                 std::to_wstring(stats.damage) + L"   / Max: " + std::to_wstring(stats.maximum);
@@ -6971,10 +7070,10 @@ struct Menu {
             const auto draw_stat = [&](const wchar_t* text, float y) {
                 draw_text(dc, text, {stats_x + 8, y, 352, 25}, *hud_stats_font, Gdiplus::StringAlignmentNear);
             };
-            draw_stat(life.c_str(), 132);
-            draw_stat(L"Damage Multiplier:  1.00", 156);
-            draw_stat(damage.c_str(), 180);
-            draw_stat(hits.c_str(), 204);
+            draw_stat(life.c_str(), 186);
+            draw_stat(L"Damage Multiplier:  1.00", 210);
+            draw_stat(damage.c_str(), 234);
+            draw_stat(hits.c_str(), 258);
         }
         tile(0, 88, 1096, 394, 1366, {538, -18, 204, 180});
         for (const float x : {597.0f, 625.0f}) {
@@ -7476,6 +7575,8 @@ struct Menu {
     }
 
     void load_stages(skullgirls::SpriteArchive& core, skullgirls::SpriteArchive& ui_win) {
+        stage_layout = skullgirls::read_stage_select_layout(ui_win.read("ui/Win/Charselect.gbs"));
+        const auto localization = core.read_if_present("core/localization/en_loc.json");
         const auto config = core.read("core/stages.ini");
         std::istringstream stream(std::string(config.begin(), config.end()));
         for (std::string line; std::getline(stream, line);) {
@@ -7484,9 +7585,10 @@ struct Menu {
             std::string id, level, picture;
             if (!(row >> id >> level >> picture)) continue;
             std::string parent;
-            bool beta_only = false;
+            bool beta_only = false, exclude_from_random = false;
             for (std::string option; row >> option;) {
                 if (option == "BetaOnly") beta_only = true;
+                if (option == "ExcludeFromRandom") exclude_from_random = true;
                 if (option.rfind("IsAlt>", 0) == 0) parent = option.substr(6);
             }
             if (beta_only) continue;
@@ -7495,7 +7597,17 @@ struct Menu {
             auto label = id;
             if (!label.empty() && label.front() == '_') label.erase(0, 1);
             std::replace(label.begin(), label.end(), '_', ' ');
-            stages.push_back({option_label(label), std::move(id), std::move(parent), std::move(level), std::move(preview)});
+            auto display_name = option_label(label);
+            if (localization) {
+                const std::string_view json(reinterpret_cast<const char*>(localization->data()), localization->size());
+                if (const auto localized = skullgirls::stage_localized_name(json, id)) {
+                    const int count = MultiByteToWideChar(CP_UTF8, 0, localized->data(), int(localized->size()), nullptr, 0);
+                    display_name.resize(count);
+                    if (count) MultiByteToWideChar(CP_UTF8, 0, localized->data(), int(localized->size()), display_name.data(), count);
+                }
+            }
+            if (!exclude_from_random) random_stages.push_back(stages.size());
+            stages.push_back({std::move(display_name), std::move(id), std::move(parent), std::move(level), std::move(preview)});
         }
         for (std::size_t i = 0; i < stages.size(); ++i) {
             if (stages[i].parent.empty()) stage_groups.push_back({i});
@@ -7743,6 +7855,7 @@ struct Menu {
     }
 
     void start_character_select() {
+        if (audio) { audio->stop_combat(); audio->music("select_intro", "select_loop"); }
         for (auto& team : fighters) team.clear();
         for (auto& colors : locked_colors) colors.clear();
         nameplate_states = {};
@@ -7753,6 +7866,12 @@ struct Menu {
 
     // Apply navigation to the current setup screen and start loading after stage confirmation.
     void training_input(WPARAM key, bool accept, bool cancel) {
+        if (audio && training != TrainingView::practice) {
+            if (cancel) audio->ui("ui.nope.wav");
+            else if (accept) audio->ui(training == TrainingView::stage_select ? "stageselect.whoosh.wav" : "submenu.select.wav");
+            else if (key == VK_RIGHT || key == VK_LEFT || key == VK_UP || key == VK_DOWN)
+                audio->ui(player ? "smallswitch.c.p2.wav" : "smallswitch.c.p1.wav");
+        }
         const int horizontal = (key == VK_RIGHT) - (key == VK_LEFT);
         const int vertical = (key == VK_DOWN) - (key == VK_UP);
         if (training == TrainingView::options) {
@@ -7841,6 +7960,7 @@ struct Menu {
                 }
                 choosing_palette = false;
                 const auto color = available_palette(fighter_cursor, palette_cursor);
+                if (audio) audio->ui(std::string("charconfirm.") + roster[fighter_cursor] + (player ? ".p2.wav" : ".p1.wav"));
                 team.push_back(fighter_cursor);
                 locked_colors[player].push_back(color);
                 palette_cursor = 0;
@@ -7849,8 +7969,7 @@ struct Menu {
                         player = 1;
                         training = TrainingView::team_size;
                     } else {
-                        training = TrainingView::stage_select;
-                        stage_index = stage_variant = 0;
+                        enter_stage_select();
                     }
                 } else {
                     nameplate(player, team.size(), fighter_cursor, false);
@@ -7875,15 +7994,16 @@ struct Menu {
             }
         } else if (showing_stage_select() && !cancel) {
             if (training == TrainingView::stage_select) {
-                if (horizontal) {
-                    stage_index = horizontal < 0 ? (stage_index + stage_groups.size() - 1) % stage_groups.size()
-                                                 : (stage_index + 1) % stage_groups.size();
-                    stage_variant = 0;
-                } else if (vertical) {
-                    const auto count = stage_groups[stage_index].size();
-                    stage_variant = vertical < 0 ? (stage_variant + count - 1) % count
-                                                 : (stage_variant + 1) % count;
+                if (horizontal || vertical) {
+                    const auto previous = selected_stage_preview();
+                    const bool changed = horizontal ? stage_selection.horizontal(horizontal, stage_groups)
+                                                    : stage_selection.vertical(vertical, stage_groups);
+                    if (changed) {
+                        previous_stage_preview = previous;
+                        stage_switched = std::chrono::steady_clock::now();
+                    }
                 } else if (accept || key == VK_RETURN) {
+                    confirm_stage_selection();
                     if (practice_slot_playable(0, 0)) {
                         start_practice();
                     } else {
@@ -7893,6 +8013,7 @@ struct Menu {
             }
         } else if (cancel) {
             if (training == TrainingView::stage_confirmed) {
+                stage_selection.resolved.reset();
                 training = TrainingView::stage_select;
                 return;
             }
@@ -7919,6 +8040,7 @@ struct Menu {
     Clock::time_point menu_started{};
 
     void leave_title() {
+        if (audio) audio->ui("menu.select.intro.wav");
         title_visible = false;
         entering_menu = true;
         menu_started = Clock::now();
@@ -7941,6 +8063,7 @@ struct Menu {
     }
 
     void scroll(int direction) {
+        if (audio) audio->ui("menu.select.wav");
         const auto now = Clock::now();
         scroll_from = scroll_position(now) - scroll_target + selected;
         scroll_target = selected + direction;
@@ -7965,6 +8088,7 @@ struct Menu {
     }
 
     void set_submenu(bool open) {
+        if (audio) audio->ui(open ? "submenu.select.wav" : "ui.nope.wav");
         const auto now = Clock::now();
         submenu_from = submenu_position(now);
         submenu_started = now;
@@ -8238,7 +8362,16 @@ struct Menu {
         // Filmstrip and header transforms from CharSelectFighters. Roster order and
         // additional row placement follow the character-select frame in the recording.
         if (showing_stage_select()) {
-            current_stage().preview->draw(dc, 0, 0, 1280, 720);
+            city.draw(dc, 0, 0, 1280, 720);
+            const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - stage_switched).count();
+            const auto fade = std::clamp(elapsed * 60 / std::max(1u, stage_layout.fade_frames - 1), 0.0, 1.0);
+            const auto& preview = stage_layout.preview;
+            const auto* selected = selected_stage_preview();
+            if (previous_stage_preview)
+                previous_stage_preview->draw(dc, preview.x, preview.y, preview.width, preview.height,
+                                             selected ? 255 : static_cast<BYTE>(255 * (1 - fade)));
+            if (selected)
+                selected->draw(dc, preview.x, preview.y, preview.width, preview.height, static_cast<BYTE>(255 * fade));
             frame.draw(dc, 0, 0, 1280, 720);
             spot.draw(dc, 0, 0, 1280, 720, 180);
         } else {
@@ -8350,27 +8483,36 @@ struct Menu {
         }
         draw_nameplates(dc);
         if (showing_stage_select()) {
-            // Convert the visible positions in the recording to the 1280x720 scene.
-            stage_header.draw(dc, 546, 145, 188, 38);
-            draw_text(dc, L"★ SELECT STAGE ★", {546, 151, 188, 30}, 22, Gdiplus::StringAlignmentCenter);
-            stage_bar.draw(dc, 264, 625, 752, 64);
-            stage_arrow.draw(dc, 890, 642, 20, 27);
-            const auto state = dc.Save();
-            dc.TranslateTransform(1280, 0);
-            dc.ScaleTransform(-1, 1);
-            stage_arrow.draw(dc, 890, 642, 20, 27);
-            dc.Restore(state);
-            if (stage_groups[stage_index].size() > 1) {
-                for (int direction : {-1, 1}) {
+            const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - stage_entered).count();
+            const auto draw_texture = [&](const Texture& texture, const skullgirls::TitleRect& rect, bool mirrored = false) {
+                const auto saved = dc.Save();
+                if (mirrored) { dc.TranslateTransform(rect.x * 2 + rect.width, 0); dc.ScaleTransform(-1, 1); }
+                texture.draw(dc, rect.x, rect.y, rect.width, rect.height);
+                dc.Restore(saved);
+            };
+            draw_texture(stage_header, stage_layout.header);
+            const auto& header = stage_layout.header_text;
+            draw_text(dc, L"SELECT STAGE", {header.x, header.y, header.width, header.height},
+                      16, Gdiplus::StringAlignmentCenter);
+            const auto controls = dc.Save();
+            dc.TranslateTransform(0, stage_layout.entrance_offset(elapsed));
+            draw_texture(stage_bar, stage_layout.bar);
+            draw_texture(stage_arrow, stage_layout.arrows[0]);
+            draw_texture(stage_arrow, stage_layout.arrows[1], true);
+            if (!stage_selection.random() && stage_groups[stage_selection.choice - 1].size() > 1) {
+                for (unsigned i = 0; i < 2; ++i) {
                     const auto arrow = dc.Save();
-                    dc.TranslateTransform(640, direction < 0 ? 624 : 687);
-                    dc.RotateTransform(float(direction * 90));
-                    stage_variant_arrow.draw(dc, -10, -13.5f, 20, 27);
+                    const auto& rect = stage_layout.variant_arrows[i];
+                    dc.TranslateTransform(rect.x, rect.y);
+                    dc.RotateTransform(stage_layout.variant_rotation[i]);
+                    stage_variant_arrow.draw(dc, 0, 0, rect.width, rect.height);
                     dc.Restore(arrow);
                 }
             }
-            draw_text(dc, current_stage().name.c_str(), {392, 641, 496, 36},
+            const auto& label = stage_layout.name;
+            draw_text(dc, stage_selection_name().c_str(), {label.x, label.y, label.width, label.height},
                       26, Gdiplus::StringAlignmentCenter);
+            dc.Restore(controls);
             if (training == TrainingView::stage_confirmed)
                 draw_text(dc, L"Stage selected", {420, 690, 440, 28}, 21, Gdiplus::StringAlignmentCenter);
         }
@@ -8666,7 +8808,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         default: break;
         }
         if (menu.showing_stage_select()) {
-            const auto title = std::wstring(caption) + L" — " + menu.current_stage().name;
+            const auto title = std::wstring(caption) + L" — " + menu.stage_selection_name();
             SetWindowTextW(window, title.c_str());
         } else {
             SetWindowTextW(window, caption);

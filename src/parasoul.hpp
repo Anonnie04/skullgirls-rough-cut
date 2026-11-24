@@ -39,7 +39,7 @@ struct ParasoulPlayback : CerebellaPlayback {
             const auto& frame = tick->frame;
             const auto execute = [&](const auto& data) {
                 FoitAnimationFrame events{};
-                events.script = data.script;
+                events.script = data.script; events.sounds = data.sounds;
                 visual.enter(events, state, inputs, facing_right);
                 for (const auto& spawn : data.spawns)
                     visual.pending.push_back({0, &spawn, 0, 0, 1, false, state});

@@ -78,6 +78,7 @@ struct FoitFrameVariant {
     std::vector<FoitSpawn> spawns;
     bool destroys_entity = false;
     std::uint8_t script_flags = 0;
+    std::vector<std::uint32_t> sounds;
 };
 
 struct FoitAnimationFrame {
@@ -90,6 +91,7 @@ struct FoitAnimationFrame {
     std::vector<FoitSpawn> spawns;
     bool destroys_entity = false;
     std::uint8_t script_flags = 0;
+    std::vector<std::uint32_t> sounds;
 };
 
 using FoitAnimation = std::vector<FoitAnimationFrame>;

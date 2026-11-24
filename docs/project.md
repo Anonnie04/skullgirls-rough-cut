@@ -31,7 +31,7 @@ may have only `data01`; the runtime resolver accepts it and prefers `data02`
 when both are available. No missing depot is fabricated or downloaded.
 
 `build-linux.sh` builds the native playable `skullgirls-main-menu` preview,
-the three asset tools, and runs the three portable tests without requiring
+the three asset tools, and runs the six portable tests without requiring
 CMake. The Linux backend shares the Windows preview's menus, sprite decoding,
 and training simulation. SDL2 handles the window and keyboard events, OpenGL
 draws 3D stages and presents frames, and Cairo supplies the 2D drawing adapter.
@@ -99,7 +99,12 @@ Training Options and Character Select.
 Select any of the six playable fighters for either player and choose a stage
 to try two-player Training. Teams can mix fighters and use duplicate characters
 with different palettes.
-Use Up and Down on Stage Select to choose an alternate where available.
+Stage Select opens on **Random**, including when returning through Change Stage.
+Left and Right wrap through Random and the base maps; Up and Down choose an
+alternate where available. Confirming Random selects one eligible map, excluding
+entries marked `ExcludeFromRandom` in `core/stages.ini`. Those maps remain
+available through manual selection. The selected map stays fixed for the match
+and its resets.
 All 32 entries in the installed stage roster are playable. The three Arena
 tournament variants use the shared 3D Arena scene with their original texture
 sets. Medici Tower, Training Stage, Boardwalk, and both Rooftops variants use
@@ -474,6 +479,57 @@ chooses the art bank named by each frame, and loads the alternate bank
 only when it is needed. The viewer and exporter also share the choice
 between a default palette DDS and a legacy palette embedded in the FOIT.
 
+## Stage selection reference
+
+The installed Linux game's stage-select activation passes a `-1` stage cursor
+at `0x6eb772`, and its preview routine at `0x6e6d00` uses `stage_random` outside
+the concrete stage list. The packaged random preview is transparent, leaving
+the character-select city backdrop visible. The remake keeps Random as a
+separate UI choice, resolves it only on confirmation, and honors the roster's
+`ExcludeFromRandom` flags independently of manual alternate selection.
+Stage captions come from the original English localization dictionary, so IDs
+such as `New_Meridian` display as **Streets of New Meridian**.
+
+`stage_select.hpp` reads stage-name, arrow, and header positions directly from
+`ui/Win/Charselect.gbs`, including the name group's pivot. Its `OnActivate`
+track provides the eighteen-frame entrance, and `CharSelectBackground_NEW`'s
+`Stage_Fade_Up` provides the sixteen-frame preview transition and preview bounds.
+The Linux preview routine alternates `Stage_01` and `Stage_02` with the
+`Stage_Switch_01/02` animations; the remake similarly crossfades the previous
+and current preview. Alternate arrows appear only for groups with variants.
+
+`stage-select-test` covers Random defaults, wraparound, alternate selection,
+excluded maps, and stable confirmation. The Linux smoke check also verifies
+the final fighter-pick entry, cancellation/reentry, and loading a match through
+Random, and captures `linux-stage-random.png`, `linux-stage-selected.png`, and
+`linux-stage-alternate.png`.
+
+## Training portraits and lifebars
+
+HUD portraits use the three PCX layers under `ui/palettized_hud_art`, rather
+than the fighter sprite's packed shade channels. The installed Linux binary
+constructs the color, line and shade paths at `0x66a5d8`, `0x66a69a` and
+`0x66a751`; the color loader at `0x65c230` applies the palette-index remapping.
+The packaged `core/shaders/Otter_fp.fx` and
+`core/shaders/glsl12/Otter_fp-Palettized.glsl` provide the reference for the
+separate portrait shading: the shade range starts at 100, outlines use sixteen
+coverage steps, and palette alpha contains a lighting flag. `hud_portrait.hpp`
+composites those channels into a bitmap before scaling it, preserving transparent
+backgrounds and the selected character palette.
+
+The HUD now uses `ui/Win/InGame.gbs`'s main/middle/top energy textures, black
+covers, red damage trail, damage divider, round-pip frames, and stock colors.
+The portrait and frame use the authored `P1_Bar` coordinates and draw order;
+the second player's HUD mirrors the same layout.
+The Linux executable's HUD setup at `0x73e1d0` resolves the named portrait
+objects, and the setup near `0x73344f` resolves the named life layers.
+These addresses refer to the installed Linux ELF, not the Windows executable.
+
+`hud-portrait-test` checks shade endpoints, independent outlines, transparency,
+palette groups, lighting alpha, and invalid layer dimensions using synthetic
+data. The Linux smoke check additionally captures damaged solo/duo/trio HUDs
+as `linux-hud-1.png` through `linux-hud-3.png` in its working directory.
+
 ## Loading performance
 
 The original mounts a GFS package through `FUN_004e5950`. It parses the
@@ -810,3 +866,57 @@ Sprite references are one-based, with zero representing an empty slot.
 ```powershell
 .\build\Release\skullgirls-sprite.exe 'C:\path\to\Skullgirls\data02' filia animations 123
 ```
+
+
+Native Linux sound uses FAudio, matching the installed Linux executable's
+FAudio imports. It loads the system library or the original game's
+`lib/x86_64-pc-linux-gnu/libFAudio.so.0`; it reads assets directly from the
+installed `ui-win.gfs`, `music-win.gfs`, and `characters-win.gfs`. No extracted
+sounds or original binaries are included in the repository. The unmodified
+FAudio API header is vendored with its license from
+https://github.com/FNA-XNA/FAudio/blob/master/include/FAudio.h.
+
+Menus play original navigation/confirmation cues. Menu, character select,
+and stage music queue an intro followed by an endless loop. Stage
+`Music_Intro` and `Music_Loop` settings take precedence over `core/music.ini`.
+Animation records retain their authored sound IDs, including conditional
+variants and effect entities. Character banks supply weighted choices, avoid immediate repeats for groups
+with three or more variations, and play every direct child layer. A choice's
+wave references queue in their stored order. Modes 1/2/4/6 use the voice bus;
+mode 3 suppresses playback, while modes 4/6 preserve the other actor channel.
+The serialized detached flag permits overlapping sounds. Unresolved IDs try
+the shared hitspark bank.
+Combat sounds pause with training and clear on reset/exit. Missing audio
+devices leave the preview playable and print an error. Use `--no-audio` to
+explicitly disable sound.
+
+This is an initial reconstruction of the original sound path. Some authored
+IDs are absent from the installed character/shared banks and remain silent.
+The five serialized operand pairs forward event hashes to owner, opponent,
+opponent's opponent, and live owned helpers. Character-name source operands
+use the original uppercase hash continuation. The optional signed byte writes
+script variable `0x98` on the actual fighter, intro, or effect state. Each
+forwarding chain preserves destination order and bounds repeated entity/event
+pairs to avoid cycles. Captured-target name sources stay literal when no
+captured target is represented. Completion-flag behavior, alternate voices,
+and exact original music transition timing are not fully reconstructed.
+Missing hashes are not filled using unrelated characters' voices.
+
+Run `./runtime/skullgirls-main-menu --audio-smoke-test` to verify actual
+FAudio PCM/ADPCM output and intro/loop queues. For headless checks, prefix
+`SDL_AUDIODRIVER=dummy`; the diagnostic still checks rendered nonzero PCM
+samples. `build-linux/audio_data-test runtime/data01` additionally validates
+the seven installed banks and their animation sound references.
+
+
+Further Linux audio reference points (installed executable): `0x482ff0`
+selects weighted choices, with immediate-repeat rejection for groups larger
+than two; `0x489a20` plays the selected choice followed by every direct child;
+`0x489280` routes modes and detached playback; `0x48e94e` queues each wave
+reference in order. `0x48ea30` replaces the other actor channel unless the
+mode is 4 or 6. The sound operand resolver at `0x482760` and its caller at
+`0x4892c7` establish that the ten words are five event-hash/source pairs,
+not pitch or volume modifiers. `0x4b77a0` dispatches their five destinations;
+`0x6594e2` assigns a fighter's opposing-team entity pointer, and `0x6b8990`
+continues a supplied hash with the uppercase character name. `0x489c98`
+applies the optional signed byte to script slot `0x98` before playback.

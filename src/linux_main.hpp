@@ -2,13 +2,17 @@
 #ifndef SKULLGIRLS_NO_MAIN
 int main(int argc,char** argv) {
     try {
-        bool smoke=false;
+        bool smoke=false, audio_smoke=false, no_audio=false;
         std::filesystem::path requested;
         for(int i=1;i<argc;++i) {
             if(std::string_view(argv[i])=="--smoke-test") smoke=true;
+            else if(std::string_view(argv[i])=="--audio-smoke-test") audio_smoke=true;
+            else if(std::string_view(argv[i])=="--no-audio") no_audio=true;
             else if(requested.empty()) requested=argv[i];
-            else throw std::runtime_error("Usage: skullgirls-main-menu [game data folder] [--smoke-test]");
+            else throw std::runtime_error("Usage: skullgirls-main-menu [game data folder] [--smoke-test] [--audio-smoke-test] [--no-audio]");
         }
+        const auto data=skullgirls::resolve_runtime_data(std::filesystem::read_symlink("/proc/self/exe"),requested);
+        if (audio_smoke) { skullgirls::run_audio_smoke_test(data); return 0; }
         if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS|SDL_INIT_TIMER)!=0) throw std::runtime_error(SDL_GetError());
         struct SdlRuntime { ~SdlRuntime(){ SDL_Quit(); } } sdl;
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,2);
@@ -26,8 +30,11 @@ int main(int argc,char** argv) {
         std::fprintf(stderr,"Linux backend: SDL %d.%d.%d, OpenGL %s\n",SDL_MAJOR_VERSION,SDL_MINOR_VERSION,SDL_PATCHLEVEL,glGetString(GL_VERSION));
         auto menu=std::make_unique<Menu>();
         menu_instance=menu.get();
-        const auto data=skullgirls::resolve_runtime_data(std::filesystem::read_symlink("/proc/self/exe"),requested);
         menu->load(data);
+        if (!no_audio) {
+            try { menu->audio=skullgirls::create_linux_audio(data); menu->audio->music("menu_intro","menu_loop"); }
+            catch(const std::exception& error) { menu->audio.reset(); std::fprintf(stderr,"Audio unavailable: %s\n",error.what()); }
+        }
         std::fprintf(stderr,"Loaded game archives from %s\n",data.c_str());
         LinuxDib canvas{1280,720,std::vector<unsigned>(1280*720)};
         LinuxDc dc{&canvas};
@@ -85,9 +92,57 @@ int main(int argc,char** argv) {
             menu->fighters[0]=menu->fighters[1]={int(fighter)};
             menu->locked_colors[0]=menu->locked_colors[1]={0};
             menu->training=Menu::TrainingView::fighters; present(); capture("linux-select.png");
-            menu->start_practice(); menu->finish_practice(window.get());
+            // Complete P2's final fighter pick through the real menu input path.
+            menu->player=1; menu->team_size[1]=1;
+            menu->fighters[1].clear(); menu->locked_colors[1].clear();
+            menu->fighter_cursor=int(fighter);
+            menu->training_input('A',true,false);
+            menu->stage_entered-=std::chrono::seconds(1);
+            if(menu->training!=Menu::TrainingView::stage_select || !menu->stage_selection.random() || menu->stage_selection_name()!=L"Random")
+                throw std::runtime_error("Stage select must start on Random");
+            present(); capture("linux-stage-random.png");
+            menu->training_input(VK_LEFT,false,false);
+            menu->training_input(VK_RIGHT,false,false);
+            if(!menu->stage_selection.random()) throw std::runtime_error("Stage selection failed to wrap to Random");
+            menu->training_input(VK_RIGHT,false,false);
+            menu->stage_switched-=std::chrono::seconds(1);
+            present(); capture("linux-stage-selected.png");
+            for(unsigned i=0;i<menu->stage_groups.size() && menu->current_stage().id!="Arena";++i)
+                menu->training_input(VK_RIGHT,false,false);
+            if(menu->current_stage().id!="Arena") throw std::runtime_error("Arena stage group is missing");
+            menu->training_input(VK_DOWN,false,false);
+            if(menu->stage_selection.variant!=1) throw std::runtime_error("Stage alternate input failed");
+            menu->stage_switched-=std::chrono::seconds(1);
+            present(); capture("linux-stage-alternate.png");
+            for(const auto index:menu->random_stages)
+                if(menu->stages[index].id=="Gehenna" || menu->stages[index].id=="Arena_Evo" || menu->stages[index].id=="Arena_SGCS")
+                    throw std::runtime_error("Random includes an excluded stage");
+            menu->enter_stage_select();
+            menu->confirm_stage_selection();
+            const auto random_stage=menu->stage_selection.resolved;
+            menu->confirm_stage_selection();
+            if(menu->stage_selection.resolved!=random_stage) throw std::runtime_error("Random stage rerolled on confirmation");
+            menu->training_input(VK_ESCAPE,false,true);
+            if(menu->training!=Menu::TrainingView::fighters) throw std::runtime_error("Stage cancel did not return to fighter select");
+            menu->training_input('A',true,false);
+            if(!menu->stage_selection.random() || menu->stage_selection.resolved)
+                throw std::runtime_error("Reentering stage select did not reset to Random");
+            // Resolve Random to New Meridian for a reproducible render regression.
+            const auto eligible=menu->random_stages;
+            menu->random_stages={menu->stage_groups.front().front()};
+            menu->training_input(VK_RETURN,false,false);
+            menu->random_stages=eligible;
+            if(!menu->practice_load.valid()) throw std::runtime_error("Confirming Random did not start the match");
+            menu->finish_practice(window.get());
             for(int i=0;i<120;++i) menu->practice_tick();
             present(); capture("linux-training.png");
+            unsigned portrait_pixels=0;
+            for(unsigned y=30;y<100;++y) for(unsigned x=80;x<125;++x) {
+                const auto pixel=canvas.pixels[y*1280+x];
+                const auto r=(pixel>>16)&255,g=(pixel>>8)&255,b=pixel&255;
+                if(std::max({r,g,b})-std::min({r,g,b})>10) ++portrait_pixels;
+            }
+            if(portrait_pixels<100) throw std::runtime_error("Training portrait was obscured by its background");
             if(menu->practice_scene && !menu->practice_scene->gpu)
                 throw std::runtime_error("Smoke test expected OpenGL stage rendering");
             SDL_SetWindowSize(window.get(),960,540);
@@ -95,6 +150,27 @@ int main(int argc,char** argv) {
             present(); capture("linux-training-resized.png");
             menu->practice_input(VK_RETURN,false,false); present(); capture("linux-pause.png");
             if(!menu->practice_paused) throw std::runtime_error("Pause input failed");
+            menu->practice_paused=false;
+            for(unsigned count : {1u,2u,3u}) {
+                for(unsigned side=0;side<2;++side) {
+                    menu->fighters[side].assign(count,int(fighter));
+                    menu->locked_colors[side].resize(count);
+                    for(unsigned slot=0;slot<count;++slot) menu->locked_colors[side][slot]=slot+side;
+                }
+                menu->prepare_practice_bitmaps();
+                menu->prepare_hud_portraits();
+                menu->reset_practice();
+                for(unsigned side=0;side<2;++side) {
+                    menu->hud_stats[side].life=4000;
+                    menu->hud_stats[side].displayed_life=5000;
+                    menu->hud_stats[side].damage_trail=9000;
+                    for(unsigned slot=0;slot<count;++slot)
+                        menu->practice_teams[side].health[slot].reset_life(15500-slot*4000);
+                }
+                present();
+                const auto name="linux-hud-"+std::to_string(count)+".png";
+                capture(name.c_str());
+            }
             std::fprintf(stderr,"Linux smoke test passed: title, menu, character select, training, and pause rendered.\n");
             return 0;
         }
@@ -115,6 +191,10 @@ int main(int argc,char** argv) {
                 try { menu->finish_practice(window.get()); SetWindowTextW(window.get(),L"Skullgirls - Training Room"); }
                 catch(const std::exception& error) { menu->training=Menu::TrainingView::stage_select; MessageBoxA(window.get(),error.what(),"Training Room",0); }
                 deadline=Clock::now()+period;
+            }
+            if (menu->audio) {
+                menu->audio->pause_combat(menu->practice_paused);
+                menu->audio->tick();
             }
             const bool practicing=menu->training==Menu::TrainingView::practice && !menu->practice_paused;
             if(practicing && cadence.update_due(menu->practice_speed())) menu->practice_tick();
