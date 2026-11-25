@@ -186,6 +186,129 @@ void teams(Menu& menu) {
     for(unsigned i=0;i<400 && team.assist;++i) { menu.practice_tick(); acted |= team.assist && team.assist->phase==Menu::PracticeAssist::Phase::acting; }
     check(acted && !team.assist,"Ms. Fortune assist acts and exits");
 }
+
+void head_lifecycle(Menu& menu) {
+    const auto id=[](std::string_view name){return int(std::find(roster.begin(),roster.end(),name)-roster.begin());};
+    menu.fighters[0] = {id("msfortune")};
+    menu.fighters[1] = {id("filia")};
+    menu.locked_colors[0] = menu.locked_colors[1] = {0};
+    const auto head = [&]() -> skullgirls::FoitEffectPlayback& {
+        const auto belongs_to_fortune = [](const auto& effect) { return effect.persistent_owner && effect.side == 0; };
+        check(std::count_if(menu.practice_effects.begin(), menu.practice_effects.end(), belongs_to_fortune) == 1,
+            "Fortune has exactly one head entity");
+        return *std::find_if(menu.practice_effects.begin(), menu.practice_effects.end(), belongs_to_fortune);
+    };
+
+    for (bool facing : {true, false}) {
+        menu.reset_practice();
+        auto& fighter = menu.practice_players[0];
+        fighter.practice_x = facing ? 500.0f : 1200.0f;
+        menu.practice_players[1].practice_x = facing ? 1250.0f : 450.0f;
+        menu.practice_tick();
+        check(head().move == 0, "Reset creates a single attached head");
+
+        auto& actor = *fighter.msfortune;
+        actor.facing_right = facing;
+        actor.start(167);
+        actor.state.variables[0x3b] = 2.0f;
+        fighter.jump_height = 450;
+        bool kicked = false, landed = false;
+        for (unsigned i = 0; i < 190; ++i) {
+            menu.practice_tick();
+            kicked |= head().move == 5 && head().hit && head().value(0x9f) < 0;
+            landed |= head().move == 23;
+            check(head().x >= 0 && head().x <= menu.practice_width && head().y >= 0, "Head Spike stays inside the playfield");
+        }
+        check(kicked && landed && actor.value(0x8b) != 0 && head().y == 0,
+            "Head Spike gives the detached head a downward hit and lands it");
+
+        const WPARAM back = facing ? VK_LEFT : VK_RIGHT;
+        const auto call = [&] {
+            menu.practice_key(VK_DOWN, true);
+            menu.practice_tick();
+            menu.practice_key(back, true);
+            menu.practice_tick();
+            menu.practice_key(VK_DOWN, false);
+            menu.practice_key('A', true);
+            menu.practice_tick();
+            menu.practice_key(back, false);
+        };
+        head().start(16);
+        head().x = facing ? 1100.0f : 600.0f;
+        head().state.variables[0x9e] = 0.0f;
+        call();
+        check(actor.move == 160 || actor.move == 161, "Quarter-circle back and LP calls a detached head");
+        for (unsigned i = 0; i < 32 && head().move != 30; ++i) menu.practice_tick();
+        check(head().move == 30, "The head runs toward Fortune during Cat Call, body=" + std::to_string(actor.move) +
+            " head=" + std::to_string(head().move) + " y=" + std::to_string(head().y));
+        const float frozen_x = head().x;
+        const unsigned frozen_record = head().record;
+        menu.advance_practice_effects(true);
+        check(head().x == frozen_x && head().record == frozen_record, "Super-freeze pauses the returning head");
+
+        menu.practice_key('A', false);
+        for (unsigned i = 0; i < 60; ++i) menu.practice_tick();
+        check(!actor.attacking() && actor.value(0x8b) != 0 && head().move != 30,
+            "Releasing Cat Call stops the head from attaching");
+
+        call();
+        for (unsigned i = 0; i < 200 && actor.value(0x8b) != 0; ++i) menu.practice_tick();
+        menu.practice_key('A', false);
+        for (unsigned i = 0; i < 40; ++i) menu.practice_tick();
+        check(head().move == 0 && actor.value(0x8b) == 0 && !actor.attacking(),
+            "Holding Cat Call reattaches the head and restores headed idle");
+
+        actor.start(164);
+        for (unsigned i = 0; i < 180; ++i) menu.practice_tick();
+        auto& rival = menu.practice_players[1];
+        head().start(16);
+        head().x = rival.practice_x + (facing ? -120.0f : 120.0f);
+        head().state.variables[0x9e] = 0.0f;
+        menu.practice_tick();
+        menu.practice_key('K', true);
+        menu.practice_key('F', true);
+        menu.practice_tick();
+        menu.practice_key('F', false);
+        bool struck = false;
+        for (unsigned i = 0; i < 75; ++i) {
+            menu.practice_tick();
+            struck |= head().move >= 61 && head().move <= 74;
+            check(fighter.hurt_group < 0, "Striking the head leaves Fortune's distant body out of hitstun");
+        }
+        menu.practice_key('K', false);
+        check(struck && menu.hud_stats[1].hits == 1 && menu.hud_stats[1].damage > 0,
+            "Filia's low kick hits the detached head once and transfers damage");
+        check(head().move == 16 || head().move == 17, "The head recovers after an enemy hit");
+
+        head().start(22);
+        head().x = fighter.practice_x + (facing ? 75.0f : -75.0f);
+        head().y = 250.0f;
+        head().state.variables[0x3b] = 2.0f;
+        head().state.variables[0x9f] = 0.0f;
+        call();
+        for (unsigned i = 0; i < 200 && actor.value(0x8b) != 0; ++i) {
+            menu.practice_tick();
+            if (head().y > 0) check(actor.value(0x8b) != 0, "Cat Call waits for the airborne head to land");
+        }
+        menu.practice_key('A', false);
+        check(actor.value(0x8b) == 0, "Cat Call reattaches the head after landing");
+    }
+
+    menu.fighters[0] = {id("msfortune"), id("filia")};
+    menu.locked_colors[0] = {0, 0};
+    menu.reset_practice();
+    menu.practice_tick();
+    head().captured_target = true;
+    auto& victim = menu.practice_players[1];
+    victim.throw_phase = Menu::PracticeFighter::ThrowPhase::grabbed;
+    menu.tag_practice_fighter(0, 1, Menu::PracticeTag::Kind::regular);
+    menu.advance_practice_effects(false);
+    check(victim.throw_phase != Menu::PracticeFighter::ThrowPhase::grabbed &&
+        std::none_of(menu.practice_effects.begin(), menu.practice_effects.end(), [](const auto& effect) {
+            return effect.persistent_owner && effect.side == 0;
+        }), "A departing head releases its held victim");
+}
+
 void head_and_combat(Menu& menu) {
     const auto id=[](std::string_view name){return int(std::find(roster.begin(),roster.end(),name)-roster.begin());};
     menu.fighters[0]={id("msfortune")};menu.fighters[1]={id("filia")};menu.locked_colors[0]=menu.locked_colors[1]={0};
@@ -260,7 +383,7 @@ int main(int argc, char** argv)
     int result=0;
     try { Menu menu; menu.game_data=argv[1]; load_with_retry(menu);
         check(menu.msfortune_assets.animations.size()==545 && menu.msfortune_frames[2].width,"Ms. Fortune assets load");
-        commands(menu,true); commands(menu,false); specials(menu,true);specials(menu,false);training(menu); movement_and_defense(menu); teams(menu); throw_victim(menu);head_and_combat(menu);
+        commands(menu,true); commands(menu,false); specials(menu,true);specials(menu,false);training(menu); movement_and_defense(menu); teams(menu); throw_victim(menu);head_lifecycle(menu);head_and_combat(menu);
         std::cout<<"Ms. Fortune moves, projectiles, throws, and Training integration passed\n";
     } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; result=1; }
     Gdiplus::GdiplusShutdown(graphics); return result;

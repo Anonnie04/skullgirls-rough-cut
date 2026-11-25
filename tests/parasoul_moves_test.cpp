@@ -1,4 +1,4 @@
-#ifndef _WIN32
+﻿#ifndef _WIN32
 #define SKULLGIRLS_NO_MAIN
 #endif
 #include "../src/main_menu.cpp"
@@ -239,6 +239,48 @@ void throw_victim(Menu& menu) {
         menu.training_options.pop_back();
     }
 }
+void egret_camera(Menu& menu) {
+    const float width=menu.practice_width;
+    menu.practice_width=4000;
+    for (bool facing:{false,true}) {
+        menu.reset_practice();
+        auto& fighter=menu.practice_players[0];
+        fighter.practice_x=facing?2200.0f:2300.0f;
+        menu.practice_players[1].practice_x=facing?2320.0f:2180.0f;
+        menu.update_practice_camera(true);
+        fighter.parasoul->facing_right=facing;
+        fighter.parasoul->start(215);++fighter.attack_instance;
+        for(unsigned i=0;i<12;++i)menu.practice_tick();
+        auto egret=std::find_if(menu.practice_effects.begin(),menu.practice_effects.end(),[&](const auto& e){
+            return e.root==&menu.parasoul_assets && e.table==&menu.parasoul_assets.children[42];
+        });
+        check(egret!=menu.practice_effects.end(),"Egret Call spawns its soldier");
+        auto view=menu.practice_viewport();
+        check(egret->x>=view.left && egret->x<=view.left+view.width,"Egret enters the visible camera in both facings");
+        check(egret->pose>1 && menu.parasoul_frames.at(egret->pose).width,"Egret has visible soldier artwork");
+        menu.practice_camera_center-=300;
+        menu.practice_camera_zoom=0.5f;
+        view=menu.practice_viewport();
+        menu.advance_practice_effects(false);
+        check(std::abs(egret->value(0x0f)-view.left)<0.01f &&
+              std::abs(egret->value(0x10)-(view.left+view.width))<0.01f,"Egret camera bounds refresh during pan and zoom");
+    }
+    menu.practice_width=width;menu.reset_practice();
+}
+void portrait_transparency(Menu& menu) {
+    skullgirls::SpriteArchive ui(menu.game_data/"ui.gfs"), foits(menu.game_data/"characters-foits.gfs");
+    const auto layer=[&](const char* suffix) {
+        return skullgirls::read_hud_portrait_layer(ui.read(std::string("ui/palettized_hud_art/character_parasoul_")+suffix+".pcx"));
+    };
+    const auto colors=layer("colors"), shade=layer("shade"), lines=layer("lines");
+    const auto map=skullgirls::read_hud_palette_map(foits.read("characters/parasoul.foit"));
+    const auto palette=skullgirls::CharacterAssets(menu.game_data,"parasoul").read_default_palette();
+    const auto pixels=skullgirls::colorize_hud_portrait(colors,shade,lines,palette,map);
+    const auto hair=pixels.at(370*colors.width+150);
+    check(map[4]==2 && (hair>>24)>=250 && ((hair>>16)&255)>(hair&255),
+        "Parasoul red hair stays opaque instead of exposing the portrait background");
+    check(pixels.front()==0,"Parasoul portrait background stays transparent");
+}
 void projectile_regressions(Menu& menu) {
     const auto id=[](std::string_view name){return int(std::find(roster.begin(),roster.end(),name)-roster.begin());};
     menu.fighters[0]={id("parasoul")};menu.fighters[1]={id("filia")};menu.locked_colors[0]=menu.locked_colors[1]={0};
@@ -306,7 +348,7 @@ int main(int argc, char** argv)
     int result=0;
     try { Menu menu; menu.game_data=argv[1]; menu.load_parasoul();
         check(menu.parasoul_assets.animations.size()==568 && menu.parasoul_frames[2].width,"Parasoul assets load");
-        commands(menu,true); commands(menu,false); specials(menu,true);specials(menu,false); training(menu); movement_and_defense(menu); teams(menu); throw_victim(menu);combat(menu);projectile_regressions(menu);
+        commands(menu,true); commands(menu,false); specials(menu,true);specials(menu,false); training(menu); movement_and_defense(menu); teams(menu); throw_victim(menu);combat(menu);projectile_regressions(menu);egret_camera(menu);portrait_transparency(menu);
         std::cout<<"Parasoul moves, projectiles, throws, and Training integration passed\n";
     } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; result=1; }
     Gdiplus::GdiplusShutdown(graphics); return result;

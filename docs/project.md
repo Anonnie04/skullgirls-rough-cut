@@ -7,7 +7,7 @@ links the Steam installation.
 
 The preview covers the title screen, main menu, Training Options,
 character and palette selection, stage selection, and a playable Training
-Room for Filia, Cerebella, Peacock, Parasoul, Ms. Fortune, and Painwheel.
+Room for Filia, Cerebella, Peacock, Parasoul, Ms. Fortune, Painwheel, and Robo-Fortune.
 The command-line tools inspect GFS archives and export sprite layers and frames.
 
 ## Linux asset tools and Steam data
@@ -96,7 +96,7 @@ Press a key at the title screen. Use the arrow keys to navigate, Z or A to
 accept, and X or S to go back. Open Training, then Training Room, to reach
 Training Options and Character Select.
 
-Select any of the six playable fighters for either player and choose a stage
+Select any of the seven playable fighters for either player and choose a stage
 to try two-player Training. Teams can mix fighters and use duplicate characters
 with different palettes.
 Stage Select opens on **Random**, including when returning through Change Stage.
@@ -410,8 +410,9 @@ headless body artwork uses the authored alternate sprite layers and offsets.
 | Cat Scratch | Quarter-circle forward + punch; repeat for follow-ups |
 | Fiber Upper | Dragon-punch motion + kick |
 | El Gato | Quarter-circle back + kick in the air |
-| Head Roll / recall | Quarter-circle back + heavy punch on the ground |
+| Head Roll | Quarter-circle back + punch on the ground, with head attached |
 | Head Spike | Quarter-circle back + heavy punch in the air, with head attached |
+| Cat Call | Quarter-circle back + light or medium punch, held while headless |
 | Cat Scratch Fever | Quarter-circle forward + two punches, one bar |
 | Feral Edge | Quarter-circle back + two kicks in the air, one bar |
 | The Fifth of Dismember | Quarter-circle back + two punches, three bars |
@@ -420,22 +421,52 @@ headless body artwork uses the authored alternate sprite layers and offsets.
 
 The head has its own persistent playback, input history, movement, hit descriptors,
 and combat state. It detaches on Head Roll or Head Spike, settles within the
-stage, accepts its authored head commands, and returns on recall. Heavy punch
-controls the detached head; directions and motion inputs select other head
-attacks. Body and head state survive practice saves and super-freeze. Head
+stage, accepts its authored head commands, and runs back while Cat Call is held.
+Releasing the punch cancels the recall. Enemy point strikes can hit the detached
+head and transfer damage to Fortune's life without putting her body in hitstun.
+Heavy punch controls the detached head. Directions and motion inputs select
+other head attacks. Body and head state survive practice saves and super-freeze. Head
 commands use reconstructed checks for parent animation tags. Recall travel and
 wall/ground handling use the preview's shared physics.
 
 The `msfortune-moves` asset-backed check covers normals, special and super entry,
 meter costs, recovery, combat damage in both facings, throws, head detachment,
-head attacks, recall, saves, rendering, defense, intros, mixed teams with the
+head attacks, Head Spike landing, interrupted and completed recalls, strikes
+against the head, saves, rendering, defense, intros, mixed teams with the
 other four playable characters, tags, and assists. A rendered headed/headless
 comparison is available locally at `build/msfortune-check.png` after visual QA.
 
-Full original-engine parity remains incomplete: exact head hit reactions and
-owner damage transfer, recall cancels, head state across tags, original collision
-masks, and DHCs still require shared-engine reconstruction. Returning through a
-tag currently creates a fresh head/body state.
+Exact head hit reactions, damage scaling, collision masks, and DHCs still
+require shared-engine reconstruction. Returning through a tag currently creates
+a fresh head and body state.
+
+### Filia reference combo and Robo-Fortune
+
+Filia's Gregor Samson and Fenrir Drive now use the live FOIT evaluator for
+record timing, immediate script records, physics, conditional hits, and recovery.
+Hit scripts resolve attacker-relative operands, including Fenrir's vertical
+alignment and its peak-hit signal. This allows Gregor's five hits to link into
+Fenrir's rise, bite, dive and release as a continuous 15-hit combo.
+
+With Filia facing right, enter Down, Down-Left, Left + two kicks for Gregor.
+After recovery, enter Forward, Down, Down-Forward + two punches for Fenrir.
+Reverse the horizontal directions when facing left. Both supers cost one bar;
+spacing and the opponent's height affect whether the link connects.
+
+Robo-Fortune is selectable as a playable fighter and Training opponent, with
+her own decoded sprites, palettes, normal command dispatcher, movement, throws,
+team entry/exit poses, HUD portrait and hitboxes. Her hit reactions run the
+original move scripts through launch, wall/floor bounce, knockdown and wakeup.
+Her broader special-move behavior still shares the reconstruction's existing
+script and combat support; this does not establish complete character parity.
+
+The `reference-moves` asset-backed test checks the 15-hit sequence in both
+facings on a compact playfield, two meter spends, pause and independent save
+state restoration, both super freezes, capture/release and return to control.
+It also checks Robo-Fortune's standing/crouching normal commands. Passing an
+optional output directory to `reference-moves-test` on Windows renders a
+20 fps PNG sequence for visual inspection. The reference clip's custom palettes
+and team-specific life/damage settings are not baked into the simulation.
 
 ### Character effects and super-freeze
 
@@ -453,9 +484,14 @@ stage animation pause. Effects with flag `0x8f & 8` keep animating. Input sampli
 continues with a five-frame button buffer. Practice saves preserve the freeze,
 effects, and background darkening.
 
-Effect playback remains a reconstruction: random script operands, some parent
-tag/bit handshakes, victim attachment, and the original shader blending and
-super-flash portraits are incomplete. Owner-bound effects use their original
+The super presentation reads filmstrip, vignette, combo-panel and digit art
+from `InGame.gbs` and the local HUD atlases. Animated cut-ins use the selected
+character's original portrait; camera focus and world-space afterimages follow
+the super, and the combo counter remains visible through its end animation.
+Presentation clocks and afterimage history are included in Practice saves.
+
+Effect playback remains a reconstruction: some parent tag/bit handshakes,
+victim attachment and original shader blending are incomplete. Owner-bound effects use their original
 `End` animation when available after the move ends. Background darkening uses
 the original easing with the preview renderer's tint.
 
@@ -516,6 +552,13 @@ separate portrait shading: the shade range starts at 100, outlines use sixteen
 coverage steps, and palette alpha contains a lighting flag. `hud_portrait.hpp`
 composites those channels into a bitmap before scaling it, preserving transparent
 backgrounds and the selected character palette.
+
+Portrait color indices now use each FOIT's authored palette-group sizes. They
+are not uniformly five indices apart: Parasoul has two reserved bands before
+her hair group, followed by eight-index skin groups. Mapping her hair index 4
+to row 1 made it transparent; the authored map resolves it to opaque row 2.
+Regression checks cover variable group sizes and Parasoul's actual hair and
+transparent background pixels.
 
 The HUD now uses `ui/Win/InGame.gbs`'s main/middle/top energy textures, black
 covers, red damage trail, damage divider, round-pip frames, and stock colors.
@@ -583,6 +626,91 @@ paint time to 14–16 ms with the hardware stage renderer active.
 The benchmark measures completed canvas paints. On the same system, the
 software stage fallback completed 135 paints in 4 s under the panning
 workload. Windows reported a 60 Hz display mode.
+
+### Blockbuster rendering check (2026-11-25)
+
+The original Windows renderer's `FUN_005624f0` configures D3D9 sampler
+states 5 and 6 (magnification/minification) to 2 (linear). The reconstruction
+now uses bilinear filtering for combat rather than GDI+'s expensive high-quality
+prefilter. Animated HUD pieces use cropped, reusable atlas images; the super
+portrait's fixed tint is prepared before combat. Opaque images bypass color
+matrices. Windows draws into the back buffer's premultiplied memory bitmap.
+
+Afterimages are generated only while the simulation advances, preventing
+stationary duplicates during super-freeze. Shadows and tinted/faded sprites
+reuse premultiplied variants, with a 64 MiB budget that is released with their
+base sprite cache. Authored super-freeze and cut-in animation clocks are unchanged.
+
+Release measurements at 1280×720 on Class Notes, using Filia's 15-hit
+Gregor-to-Fenrir sequence against Robo-Fortune:
+
+| Measurement | Median | 95th percentile | Maximum |
+| --- | ---: | ---: | ---: |
+| Isolated cut-in draw, before | 88.93 ms | 99.01 ms | 108.47 ms |
+| Isolated cut-in draw, cached art/tint and linear filtering | 9.43 ms | 12.65 ms | 14.21 ms |
+| Final live-window draw during cut-ins | 19.46 ms | 26.88 ms | 30.29 ms |
+
+The final 1,080-tick live test completed in 18.00 seconds and drew 895 frames
+(about 49.7 draws/s). This substantially reduces the blockbuster-specific
+stalls, but does not establish steady 60 fps or display/compositor presentation
+timing. The isolated test redraws several variants per simulation tick and must
+not be interpreted as live frame pacing. Raw profiling captures are under
+`build/parasoul-comparison/super-*.csv`.
+
+Regression checks compare cropped atlas art, shadows, and afterimages with
+uncached rendering under transforms and fading. They also check cache reuse,
+the variant memory budget, and that super-freeze holds existing trails without
+creating new ones. The 15-hit sequence still checks both facings, meter,
+capture/release, recovery, pause, and save states.
+
+### Windows GPU batching and 60 Hz follow-up
+
+`sprite_gpu.hpp` batches the ordered world sprites (effects behind the fighters,
+shadows, trails, fighters, front effects, projectiles and hit sparks) into a
+transparent Direct3D 11 layer. A second layer handles the cut-in filmstrip,
+portrait and vignette. The stage remains independently cached, and the HUD,
+debug overlays and combo counter retain their original composition order.
+Textures are uploaded once per cached image; tint and opacity are applied by
+the shader instead of repeated CPU color-matrix draws. Prepared sprites use
+premultiplied pixels. Queued draws retain their fallback bitmap ownership.
+Hardware initialization or rendering failure falls back to the CPU renderer.
+This is a Windows backend; the Cairo path is retained for Linux.
+
+The classroom distortion seen in earlier previews came from the test fixture:
+it compressed the authored 3750×2000 scene into its 1700×2000 combat arena.
+Live measurements now use the authored dimensions. The compact 15-hit fixture
+retains its physics bounds but translates an unscaled classroom around its
+center, preserving the teacher's and scenery's proportions.
+
+Matched 1280×720 live-window measurements, with Class Notes at its authored
+3750×2000 dimensions and hardware rendering, each ran for 1,080 simulation
+ticks over 18 seconds:
+
+| Workload | Drawn frames | Normal draw median / p95 | Cut-in draw median / p95 |
+| --- | ---: | ---: | ---: |
+| CPU sprite/cut-in backend, before GPU batching | 884 / 1080 | 11.39 / 27.07 ms | 25.96 / 37.35 ms |
+| GPU batching, authored-size arena | 1079 / 1080 | 8.02 / 14.38 ms | 11.84 / 15.22 ms |
+| GPU batching, compact 15-hit stress fixture, unscaled scenery | 1079 / 1080 | 9.60 / 12.89 ms | 11.36 / 14.65 ms |
+| GPU batching, Parasoul ground-chain workload, authored scenery | 1079 / 1080 | 12.30 / 17.74 ms | — |
+
+Both final runs missed only the initial window-startup opportunity; their
+repeat passes drew all 480 scheduled frames. The stress fixture finished at
+15 hits. In the authored-size arena, the scripted route connects five Gregor
+hits and then plays a whiffed Fenrir; it is a rendering workload, not a claim
+that the compact fixture's combo works at the different spacing. These are
+completed-window-draw measurements, not display/compositor presentation traces;
+individual frames can still exceed 16.67 ms. Logs are under
+`build/parasoul-comparison/{native-before,parts-live,stress-live,ground-live}.csv`.
+The ground-chain run also missed only its initial startup opportunity; its
+maximum draw was 23.28 ms. Thus the tested update/draw cadence reaches 60 Hz
+after startup, while some individual frame times still show several milliseconds
+of jitter. This does not establish a zero-jitter display-present cadence.
+
+The hardware test covers mirroring, rotation, atlas subregions, premultiplied
+alpha, overlapping shadows/trails, draw order, texture reuse and fallback bitmap
+lifetime. Its CPU/GPU comparison has mean channel error below 0.1 on a 0–255
+scale. The asset-backed reference test also compares complete CPU and GPU scene
+composition, including cut-ins. Hardware-independent combat tests remain intact.
 
 ## Buildable C++ reconstruction
 

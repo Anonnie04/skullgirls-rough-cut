@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include "foit_script.hpp"
 
 #include <algorithm>
@@ -7,6 +9,28 @@
 #include <cstring>
 
 namespace skullgirls {
+
+// A live timeline contains several entity contexts. Keep that storage off the
+// Windows stack while preserving value semantics for Training save states.
+template<class T> class FoitPlaybackState {
+    std::unique_ptr<T> value;
+public:
+    FoitPlaybackState() = default;
+    FoitPlaybackState(const FoitPlaybackState& other) : value(other ? std::make_unique<T>(*other) : nullptr) {}
+    FoitPlaybackState(FoitPlaybackState&&) noexcept = default;
+    FoitPlaybackState& operator=(const FoitPlaybackState& other) {
+        if (this != &other) value = other ? std::make_unique<T>(*other) : nullptr;
+        return *this;
+    }
+    FoitPlaybackState& operator=(FoitPlaybackState&&) noexcept = default;
+    explicit operator bool() const { return bool(value); }
+    T& operator*() { return *value; }
+    const T& operator*() const { return *value; }
+    T* operator->() { return value.get(); }
+    const T* operator->() const { return value.get(); }
+    T& emplace() { value = std::make_unique<T>(); return *value; }
+    void reset() { value.reset(); }
+};
 
 struct FoitVisualRequest {
     unsigned effect = 0;
@@ -21,6 +45,7 @@ struct FoitVisualRequest {
 // immediate-frame flag. The fighter and the effects keep independent clocks.
 struct FoitVisualState {
     float freeze = 0;
+    float super_mode = 0;
     int source = -1;
     unsigned next_record = 0;
     unsigned buffered_buttons = 0, buffer_ticks = 0;
@@ -34,12 +59,13 @@ struct FoitVisualState {
                const FoitInputHistory& inputs, bool facing_right) {
         auto state = context;
         state.variables[0x47] = freeze;
+        state.variables[0x48] = super_mode;
         state.variables[0x6b] = state.variables[0x6c] = state.variables[0x6d] = 0.0f;
         state.variables[0x6e] = 0.0f;
         const auto apply = [&](const auto& script) {
             for (const auto& expression : script) {
                 const auto slot = expression.destination.value;
-                if (expression.destination.flags == 1 && (slot == 0x47 || (slot >= 0x6b && slot <= 0x6e)))
+                if (expression.destination.flags == 1 && (slot == 0x47 || slot == 0x48 || (slot >= 0x6b && slot <= 0x6e)))
                     apply_foit_assignment(expression, state);
             }
         };
@@ -56,6 +82,7 @@ struct FoitVisualState {
             spawn(variant.spawns);
         }
         freeze = state.variables[0x47].value_or(0.0f);
+        super_mode = state.variables[0x48].value_or(0.0f);
         const auto id = state.variables[0x6b].value_or(0.0f);
         if (id > 0 && std::isfinite(id)) {
             const float parameter = state.variables[0x6e].value_or(0.0f);
@@ -263,10 +290,15 @@ struct FoitEffectPlayback {
     void advance_authored(FoitScriptState parent) {
         // FUN_00499980 tests links before advancing the record clock;
         // FUN_0049a7f0 reevaluates conditional record data every tick.
+        if (table==root) {
+            state.variables[0xa0]=x;
+            state.variables[0xa1]=y;
+            state.variables[0x05]=y<=0?1.0f:0.0f;
+        }
         for (const auto& link : table->transitions[move]) {
             if (link.target != move && matches(link.condition, parent)) { start(link.target); break; }
         }
-        if (floor_collision && y <= 0 && value(0x9f) < 0 && (value(0x3b) == 1 || value(0x3b) == 2))
+        if (table!=root && floor_collision && y <= 0 && value(0x9f) < 0 && (value(0x3b) == 1 || value(0x3b) == 2))
             state.variables[0x9f] = 0.0f;
         if (value(0x39) == 1) {
             const auto& source = spawner ? *spawner : parent;
@@ -348,7 +380,7 @@ struct FoitEffectPlayback {
             // Generic effect requests are transient engine slots, independent
             // of the frame's remaining time.
             FoitAnimationFrame events{};
-            for (auto i : {0x47, 0x6b, 0x6c, 0x6d, 0x6e}) {
+            for (auto i : {0x47, 0x48, 0x6b, 0x6c, 0x6d, 0x6e}) {
                 const float number = value(i);
                 std::uint32_t bits; std::memcpy(&bits, &number, sizeof(bits));
                 events.script.push_back({1, false, {0, bits}, {0, 0}, {1, unsigned(i)}});
@@ -474,7 +506,7 @@ struct FoitEffectPlayback {
             if (mode == 1 || mode == 2) state.variables[0x9f] = value(0x9f) - value(0x36);
             if (floor_collision && (mode == 1 || mode == 2) && y <= 0 && value(0x9f) < 0) {
                 y = 0;
-                state.variables[0x9f] = 0.0f;
+                if (!persistent_owner) state.variables[0x9f] = 0.0f;
             }
             if (mode == 1 || mode == 3) state.variables[0x9e] = std::copysign(
                 std::max(0.0f, std::abs(value(0x9e)) - value(0x37)), value(0x9e));

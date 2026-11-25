@@ -13,7 +13,7 @@ read -ra platform_cflags <<< "$(pkg-config --cflags sdl2 cairo gl)"
 read -ra platform_libs <<< "$(pkg-config --libs sdl2 cairo gl)"
 objects=(build-linux/{gfs,sprite_rle,sprite_layer,foit,foit_script,sprite_asset}.o)
 failed=0
-for fighter in filia cerebella peacock parasoul msfortune painwheel intro; do
+for fighter in filia cerebella peacock parasoul msfortune painwheel intro reference; do
     echo "Building and testing $fighter"
     "$cxx" -std=c++17 -O1 -pthread -Isrc "${platform_cflags[@]}" "tests/${fighter}_moves_test.cpp" \
         src/menu_timings.cpp src/title_scene.cpp src/fighter_select.cpp src/select_idle.cpp \

@@ -18,7 +18,9 @@ struct MsFortunePlayback : CerebellaPlayback {
     }
 
     bool attacking() const { return move >= first_attack && move <= last_attack; }
-    bool recalling_head = false;
+    unsigned recall_button = 0;
+    // The sixth startup record signals the head before the held recall loop.
+    bool calling_head() const { return move == 161 || (move == 160 && record >= 6); }
     unsigned grab_successor() const { return move == 139 ? (value(0xb0) ? 141u : 140u) : move == 148 ? 150u : 0; }
 
     void animate(const FoitMoveTable& moves) {
@@ -30,7 +32,7 @@ struct MsFortunePlayback : CerebellaPlayback {
                 const auto target = transition(moves, move, [&](unsigned id) {
                     return (move >= 55 && move <= 72 && id >= 63 && id <= 84) ||
                         (move == 110 && id == 111) || (move == 116 && id == 117) ||
-                        (move == 157 && id == 164) || (move == 161 && (id == 162 || id == 163)) ||
+                        (move == 157 && id == 164) || (move == 161 && id == 163) ||
                         (move == 206 && (id == 207 || id == 208)) || (move == 211 && id == 212);
                 });
                 start(target != move ? target : moves.successors.at(move));

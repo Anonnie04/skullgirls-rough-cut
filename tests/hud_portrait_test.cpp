@@ -19,7 +19,8 @@ int main() {
         skullgirls::HudPortraitLayer colors{6, 1, {3, 3, 3, 0, 0, 8}};
         skullgirls::HudPortraitLayer shade{6, 1, {100, 255, 177, 255, 255, 255}};
         skullgirls::HudPortraitLayer lines{6, 1, {255, 255, 127, 255, 0, 255}};
-        const auto pixels = skullgirls::colorize_hud_portrait(colors, shade, lines, palette);
+        skullgirls::HudPaletteMap map{}; map[3]=1; map[8]=2;
+        const auto pixels = skullgirls::colorize_hud_portrait(colors, shade, lines, palette, map);
         check((pixels[0] & 255) == 0 && (pixels[1] & 255) == 240, "Portrait shade endpoints");
         check(((pixels[0] >> 24) & 255) == 254, "Decode palette lighting flag");
         check(((pixels[2] >> 16) & 255) == 75, "Independent, sixteen-step outline");
@@ -28,9 +29,20 @@ int main() {
         check(((pixels[5] >> 8) & 255) == 200, "PCX color-group remapping");
         shade.width = 5;
         bool rejected = false;
-        try { skullgirls::colorize_hud_portrait(colors, shade, lines, palette); }
+        try { skullgirls::colorize_hud_portrait(colors, shade, lines, palette, map); }
         catch (const std::runtime_error&) { rejected = true; }
         check(rejected, "Reject mismatched layer dimensions");
+        // Parasoul has two one-index reserved bands before her five-index hair
+        // group, followed by an eight-index face group.
+        skullgirls::SpriteBytes metadata{12,0,0,0,'V','R','S','N',9,0,0,0,
+            0,0,0,0,0,1,1,0,4,
+            1,0,0,0,1,0,0,0,5,0,0,0,8,0,0,0};
+        const auto groups=skullgirls::read_hud_palette_map(metadata);
+        check(groups[0]==0 && groups[1]==1 && groups[4]==2 && groups[10]==3 && groups[14]==3,
+            "Portrait indices follow variable FOIT palette groups");
+        metadata.pop_back(); rejected=false;
+        try { skullgirls::read_hud_palette_map(metadata); } catch(const std::runtime_error&) { rejected=true; }
+        check(rejected,"Reject truncated portrait palette metadata");
         std::cout << "HUD portrait shade, outline, transparency, palette and validation passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;

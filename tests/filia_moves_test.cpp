@@ -325,7 +325,11 @@ void verify_commands(const FoitMoveTable& asset, bool facing_right)
         }
         for (unsigned i = 0; i < 400 && fighter.active_normal >= 0; ++i) {
             tick(fighter);
-            if (fighter.striking_normal == fenrir_fall && !fighter.jump_height) landing.push_back(fighter.sprite());
+            // The live evaluator presents the last fall pose on floor contact;
+            // compare the complete authored landing once its link has executed.
+            if (fighter.striking_normal == fenrir_fall && !fighter.jump_height &&
+                (!fighter.blockbuster_playback || fighter.blockbuster_playback->move==168))
+                landing.push_back(fighter.sprite());
         }
         check(landing == expect_landing && fighter.active_normal < 0 && !fighter.landing,
             std::string("Fenrir whiff plays the original landing recovery") + facing);

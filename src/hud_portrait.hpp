@@ -2,6 +2,7 @@
 
 #include "sprite_rle.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -45,12 +46,51 @@ inline HudPortraitLayer read_hud_portrait_layer(const SpriteBytes& bytes)
     return layer;
 }
 
+using HudPaletteMap = std::array<std::uint8_t, 256>;
+
+inline HudPaletteMap read_hud_palette_map(const SpriteBytes& foit)
+{
+    HudPaletteMap result{};
+    std::size_t position = 0;
+    const auto read = [&](unsigned count) {
+        if (position > foit.size() || count > foit.size() - position)
+            throw std::runtime_error("Truncated HUD palette metadata");
+        std::uint32_t value = 0;
+        for (unsigned i=0;i<count;++i) value |= std::uint32_t(foit[position++]) << (i*8);
+        return value;
+    };
+    const auto metadata = read(4);
+    if (read(4) != 0x4e535256) {
+        // Legacy sprite palettes already expand each source index to a shade row.
+        for (unsigned i=0;i<result.size();++i) result[i]=std::uint8_t(i);
+        return result;
+    }
+    const auto version=read(4);
+    if (version!=3 && version!=9) throw std::runtime_error("Unsupported HUD palette metadata");
+    position=metadata;
+    const auto skip_string=[&] { const auto length=read(1); for(unsigned i=0;i<length;++i) read(1); };
+    skip_string(); read(4);
+    if (read(1)!=1) throw std::runtime_error("Missing HUD palette groups");
+    read(2); // Number of selectable palettes.
+    const auto groups=read(1);
+    if (!groups) throw std::runtime_error("Empty HUD palette groups");
+    unsigned index=0;
+    for(unsigned group=0;group<groups;++group) {
+        const auto count=read(1);
+        read(2); // Lighting and group flags.
+        skip_string();
+        if (!count || count>result.size()-index) throw std::runtime_error("Invalid HUD palette group size");
+        for(unsigned i=0;i<count;++i) result[index++]=std::uint8_t(group);
+    }
+    return result;
+}
+
 // CPU counterpart of the installed Otter_fp Palettized portrait shader.
 // Resolve palette/shade/ink before filtering the finished image: interpolating
 // the PCX color indices themselves would blend unrelated palette groups.
 inline std::vector<std::uint32_t> colorize_hud_portrait(
     const HudPortraitLayer& colors, const HudPortraitLayer& shade,
-    const HudPortraitLayer& lines, const SpriteBytes& palette)
+    const HudPortraitLayer& lines, const SpriteBytes& palette, const HudPaletteMap& palette_map)
 {
     const auto size = std::size_t(colors.width) * colors.height;
     if (!size || colors.pixels.size() != size || shade.pixels.size() != size || lines.pixels.size() != size ||
@@ -64,9 +104,8 @@ inline std::vector<std::uint32_t> colorize_hud_portrait(
         const unsigned index = colors.pixels[i];
         const double ink = std::floor((255 - lines.pixels[i]) * 16.0 / 255) / 16;
         if (!index && !ink) continue;
-        // The PCX groups are five indices apart, centered at 3, 8, 13, ...;
-        // the fighter palette uses row zero as the transparent/background row.
-        const unsigned row = index ? std::min<std::size_t>(index / 5 + 1, palette.size() / 64 - 1) : 0;
+        // Group sizes vary by character, including reserved transparent bands.
+        const unsigned row = std::min<std::size_t>(palette_map[index], palette.size() / 64 - 1);
         const double intensity = std::clamp((shade.pixels[i] - 100.0) / 155.0, 0.0, 1.0);
         const double position = intensity * 15;
         const unsigned left = static_cast<unsigned>(position), right = std::min(left + 1, 15u);
