@@ -712,6 +712,50 @@ lifetime. Its CPU/GPU comparison has mean channel error below 0.1 on a 0–255
 scale. The asset-backed reference test also compares complete CPU and GPU scene
 composition, including cut-ins. Hardware-independent combat tests remain intact.
 
+### Direct Windows presentation (2026-11-25)
+
+The Windows preview now shares one D3D11 device between the cached stage and
+sprite renderer. Stage, fighters, trails and cut-ins compose into a GPU frame;
+GDI+ menu/HUD pixels upload in their original layer order. A two-buffer DXGI
+flip-sequential swap chain presents that frame with VSync and a waitable queue
+limited to two frames. Normal gameplay performs no GPU-to-CPU readbacks.
+Explicit screenshots and the existing CPU/GDI fallback retain readback support.
+The window preserves 16:9 letterboxing across resize and resumes after minimize.
+Linux rendering is unchanged.
+
+The local original-code references are `FUN_00519490` (fixed 1/60 simulation,
+late-draw skipping), `FUN_00519310` (deadline wait), `FUN_0056d8e0` (presentation
+interval), and `FUN_00571660` (direct D3D9 presentation). These informed the
+separation of simulation timing from rendering and direct window presentation;
+the reconstruction continues to use its existing bounded fixed-step clock.
+
+Visible 1280x720 window probes ran 1080 simulation ticks in about 18 seconds,
+with authored-size, unscaled Classroom scenery. Times below cover the entire
+window draw, including queue wait and Present, grouped by visible cut-in.
+
+| Workload | Drawn ticks | Normal median / p95 | Cut-in median / p95 |
+| --- | ---: | ---: | ---: |
+| Authored arena spacing (5-hit Gregor, Fenrir whiff) | 1078 / 1080 | 5.59 / 8.23 ms | 7.13 / 9.16 ms |
+| Compact combat spacing, unscaled stage, 15-hit Gregor/Fenrir | 1079 / 1080 | 8.49 / 12.95 ms | 7.85 / 13.13 ms |
+
+Only startup draw opportunities were skipped (ticks 0/1 and tick 0 respectively).
+Both runs reported zero sprite/stage readbacks and no fallback. Maximum draw
+in the stress run was 17.11 ms overall and 16.72 ms during a cut-in. These are
+measurements of this machine and workload, not a guarantee for all characters.
+Local logs: `build/present-check/live-queue2{,-stress}.csv`.
+
+DXGI frame statistics measured a refresh period of about 13.3375 ms (75 Hz),
+which supersedes the earlier mode-report assumption of 60 Hz. A 60 fps stream
+on this fixed-refresh display necessarily has uneven displayed refresh spans;
+the measurements do not establish uniform 16.67 ms physical presentation.
+A single queued frame caused extra waits and 46 skipped draws in the pilot;
+two queued frames removed those ongoing skips at the cost of allowing another
+pending presentation. Display settings were not changed.
+
+All 15 CTest checks passed. Added checks compare full stage/teacher/fighter/
+cut-in/HUD composition against the previous path, assert zero readbacks before
+explicit capture, and exercise actual swap-chain resize and minimize/restore.
+
 ## Buildable C++ reconstruction
 
 The CMake project builds a C++17 GFS archive index library and a read-only

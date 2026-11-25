@@ -1,6 +1,8 @@
 ﻿#ifndef _WIN32
 #define SKULLGIRLS_NO_MAIN
 #endif
+
+
 #include "../src/main_menu.cpp"
 #include <iostream>
 
@@ -139,6 +141,50 @@ void combat_art_cache(Menu& menu) {
     menu.combat_presentation=presentation;
 }
 #endif
+#ifdef _WIN32
+void direct_composition(Menu& menu) {
+    menu.prepare_sprite_renderer();if(!menu.sprite_renderer)return;
+    auto background=std::move(menu.practice_background);
+    auto scene=std::move(menu.practice_scene);
+    const auto presentation=menu.combat_presentation;
+    menu.practice_scene=std::make_unique<PracticeScene>(menu.game_data,"class_notes_3d",3750.0f,2000.0f,
+        menu.practice_floor,66.0f,200.0f,24000.0f);
+    for(auto& mesh:menu.practice_scene->meshes)for(auto& v:mesh.vertices)v.x+=(menu.practice_width-3750)*0.5f;
+    menu.practice_scene->initialize_gpu(nullptr,menu.sprite_renderer.get());
+    check(bool(menu.practice_scene->gpu),"Initialize the shared GPU stage for presentation");
+    for(bool super:{false,true}) {
+        menu.combat_presentation.cutins[0].frozen=super;
+        menu.combat_presentation.cutins[0].frame=40;
+        menu.combat_presentation.cutins[0].exit_frame=super?0:11;
+        Gdiplus::Bitmap expected(1280,720,PixelFormat32bppPARGB);
+        {Gdiplus::Graphics dc(&expected);dc.Clear(Gdiplus::Color(255,0,0,0));
+         dc.SetInterpolationMode(Gdiplus::InterpolationModeBilinear);dc.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+         menu.paint_practice(dc);}
+        std::vector<unsigned> pixels(1280*720);
+        Gdiplus::Bitmap overlay(1280,720,1280*4,PixelFormat32bppPARGB,reinterpret_cast<BYTE*>(pixels.data()));
+        Gdiplus::Graphics dc(&overlay);dc.Clear(Gdiplus::Color::Transparent);
+        dc.SetInterpolationMode(Gdiplus::InterpolationModeBilinear);dc.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+        const auto sprite_reads=menu.sprite_renderer->readback_count(),stage_reads=menu.practice_scene->gpu->readbacks;
+        menu.practice_scene->has_drawn=false;
+        menu.sprite_renderer->begin_frame(nullptr,reinterpret_cast<const BYTE*>(pixels.data()),1280*4);
+        menu.paint_practice(dc);menu.sprite_renderer->flush_overlay(dc);
+        check(menu.sprite_renderer->readback_count()==sprite_reads && menu.practice_scene->gpu->readbacks==stage_reads,
+            "Complete GPU frame keeps stage, fighters and cut-ins on the GPU");
+        auto& actual=menu.sprite_renderer->capture_frame();unsigned difference=0,samples=0;
+        for(int y=0;y<720;y+=4)for(int x=0;x<1280;x+=4) {
+            Gdiplus::Color a,b;actual.GetPixel(x,y,&a);expected.GetPixel(x,y,&b);
+            for(unsigned shift:{0u,8u,16u,24u}) {
+                difference+=unsigned(std::abs(int((a.GetValue()>>shift)&255)-int((b.GetValue()>>shift)&255)));++samples;
+            }
+        }
+        menu.sprite_renderer->abort_frame();
+        check(difference<samples*3,"Direct GPU frame preserves stage, teacher, sprites, cut-ins and HUD composition");
+    }
+    menu.combat_presentation=presentation;
+    menu.practice_scene=std::move(scene);menu.practice_background=std::move(background);
+}
+#endif
+
 void robo_commands(Menu& menu) {
     constexpr unsigned normals[2][6]={{108,111,114,110,112,115},{119,122,124,121,123,125}};
     for (bool facing:{false,true}) for (unsigned stance=0;stance<2;++stance) for (unsigned button=0;button<6;++button) {
@@ -246,6 +292,7 @@ int main(int argc, char** argv)
         setup(menu);
 #ifdef _WIN32
         combat_art_cache(menu);
+        direct_composition(menu);
 #endif
         const auto output=argc==3?std::filesystem::path(argv[2]):std::filesystem::path{};
         if (!output.empty()) {

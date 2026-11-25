@@ -383,6 +383,9 @@ struct StageGpu {
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<ID3D11Texture2D> target, staging;
     ComPtr<ID3D11RenderTargetView> target_view;
+    ComPtr<ID3D11ShaderResourceView> target_texture;
+    std::uint64_t readbacks=0;
+    int target_width=0,target_height=0;
     ComPtr<ID3D11DepthStencilView> depth_view;
     ComPtr<ID3D11VertexShader> vertex_shader;
     ComPtr<ID3D11PixelShader> pixel_shader;
@@ -411,8 +414,12 @@ struct StageGpu {
     }
 
     StageGpu(int width, int height, const std::vector<skullgirls::StageMesh>& meshes,
-             const std::map<std::string, skullgirls::SpriteBytes>& textures) {
-        auto result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+             const std::map<std::string, skullgirls::SpriteBytes>& textures,
+             ID3D11Device* shared_device=nullptr,ID3D11DeviceContext* shared_context=nullptr) {
+        target_width=width;target_height=height;
+        HRESULT result=S_OK;
+        if(shared_device) {device=shared_device;context=shared_context;}
+        else result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
             nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &context);
         if (FAILED(result)) {
             warp = true;
@@ -425,9 +432,10 @@ struct StageGpu {
         surface.Height = height;
         surface.MipLevels = surface.ArraySize = surface.SampleDesc.Count = 1;
         surface.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        surface.BindFlags = D3D11_BIND_RENDER_TARGET;
+        surface.BindFlags = D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;
         check(device->CreateTexture2D(&surface, nullptr, &target), "render target");
         check(device->CreateRenderTargetView(target.Get(), nullptr, &target_view), "render target view");
+        check(device->CreateShaderResourceView(target.Get(),nullptr,&target_texture),"stage texture view");
         surface.BindFlags = 0;
         surface.Usage = D3D11_USAGE_STAGING;
         surface.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
@@ -573,7 +581,7 @@ float4 shade(Pixel i) : SV_TARGET {
     void draw(int width, int height, const std::vector<skullgirls::StageMesh>& meshes,
               const std::vector<skullgirls::StageUv>& uv, float center, float view_height,
               float bottom, float distance, float focal, float near_clip, float far_clip,
-              std::vector<unsigned>& color) {
+              std::vector<unsigned>& color,bool download=true) {
         constexpr float clear[] = {174.0f / 255, 185.0f / 255, 199.0f / 255, 1.0f};
         context->ClearRenderTargetView(target_view.Get(), clear);
         context->ClearDepthStencilView(depth_view.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
@@ -609,6 +617,11 @@ float4 shade(Pixel i) : SV_TARGET {
                 context->DrawIndexed(static_cast<UINT>(mesh.indices.size()), 0, 0);
             }
         }
+        if(download)readback(color);
+    }
+
+    void readback(std::vector<unsigned>& color) {
+        const int width=target_width,height=target_height;
         context->CopyResource(staging.Get(), target.Get());
         D3D11_MAPPED_SUBRESOURCE mapped{};
         check(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "frame readback");
@@ -617,6 +630,7 @@ float4 shade(Pixel i) : SV_TARGET {
             std::memcpy(color.data() + y * width, row, width * sizeof(unsigned));
         }
         context->Unmap(staging.Get(), 0);
+        ++readbacks;
     }
 };
 
@@ -678,9 +692,18 @@ struct PracticeScene {
         current_uv.resize(meshes.size());
     }
 
-    void initialize_gpu(HWND) {
+    bool cpu_copy_valid=false;
+    void initialize_gpu(HWND
+#ifdef _WIN32
+                        ,skullgirls::SpriteGpu* shared=nullptr
+#endif
+                        ) {
         try {
-            gpu = std::make_unique<StageGpu>(width, height, meshes, texture_data);
+            gpu = std::make_unique<StageGpu>(width,height,meshes,texture_data
+#ifdef _WIN32
+                ,shared?shared->native_device():nullptr,shared?shared->native_context():nullptr
+#endif
+                );
         } catch (const std::runtime_error& error) {
             OutputDebugStringA(error.what());
             OutputDebugStringA(". Using software stage rendering.\n");
@@ -700,7 +723,17 @@ struct PracticeScene {
     }
 
     void draw(Gdiplus::Graphics& target, float center, float view_width, float view_height, float bottom,
-              std::uint64_t tick) {
+              std::uint64_t tick
+#ifdef _WIN32
+              ,skullgirls::SpriteGpu* frame_renderer=nullptr
+#endif
+              ) {
+#ifdef _WIN32
+        const bool direct=frame_renderer && frame_renderer->presenting();
+        if(direct && gpu && gpu->device.Get()!=frame_renderer->native_device()) {
+            initialize_gpu(nullptr,frame_renderer);has_drawn=false;
+        }
+#endif
         const std::array<float, 4> camera{center, view_width, view_height, bottom};
         const double seconds = tick / 60.0;
         for (std::size_t i = 0; i < meshes.size(); ++i)
@@ -710,18 +743,34 @@ struct PracticeScene {
                 const float distance = view_width * 0.5f / std::tan(fov * 0.00872664626f);
                 try {
                     gpu->draw(width, height, meshes, current_uv, center, view_height, bottom,
-                              distance, width * distance / view_width, near_clip, far_clip, color);
+                              distance, width * distance / view_width, near_clip, far_clip, color
+#ifdef _WIN32
+                              ,!direct
+#endif
+                              );
+#ifdef _WIN32
+                    cpu_copy_valid=!direct;
+#else
+                    cpu_copy_valid=true;
+#endif
                 } catch (const std::runtime_error& error) {
                     gpu.reset();
                     OutputDebugStringA(error.what());
                     OutputDebugStringA(". Using software stage rendering.\n");
                 }
             }
-            if (!gpu) rasterize(center, view_width, view_height, bottom);
+            if (!gpu) {rasterize(center,view_width,view_height,bottom);cpu_copy_valid=true;}
             drawn_camera = camera;
             drawn_uv.swap(current_uv);
             has_drawn = true;
         }
+#ifdef _WIN32
+        if(direct && gpu) {frame_renderer->composite_stage(gpu->target_texture.Get());return;}
+        if(gpu && !cpu_copy_valid) {
+            try {gpu->readback(color);cpu_copy_valid=true;}
+            catch(const std::exception&) {gpu.reset();rasterize(center,view_width,view_height,bottom);cpu_copy_valid=true;}
+        }
+#endif
         const auto composition = target.GetCompositingMode();
         target.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
         target.DrawImage(gpu ? &image : &software_image, 0, 0, width, height);
@@ -1077,6 +1126,7 @@ struct Menu {
 #ifdef _WIN32
     mutable std::unique_ptr<skullgirls::SpriteGpu> sprite_renderer;
     mutable bool sprite_renderer_active=false,sprite_renderer_failed=false;
+    bool direct_present_failed=false;
     mutable std::map<unsigned,skullgirls::SpriteGpu::Texture> combat_gpu_tiles;
     mutable std::array<skullgirls::SpriteGpu::Texture,roster.size()> super_gpu_portraits;
 #endif
@@ -4319,8 +4369,12 @@ struct Menu {
             if (!practice_music_intro.empty() && !practice_music_loop.empty()) audio->music(practice_music_intro, practice_music_loop);
             else audio->stage_music(current_stage().id, current_stage().parent);
         }
-        if (practice_scene) practice_scene->initialize_gpu(window);
         prepare_sprite_renderer();
+        if (practice_scene) practice_scene->initialize_gpu(window
+#ifdef _WIN32
+            ,sprite_renderer.get()
+#endif
+            );
         practice_stage_tick = 0;
         practice_paused = false;
         practice_snapshot.reset();
@@ -8118,9 +8172,9 @@ struct Menu {
     void fail_sprite_renderer(Gdiplus::Graphics& dc) const {
         sprite_renderer->fallback(dc);sprite_renderer.reset();sprite_renderer_active=false;sprite_renderer_failed=true;
     }
-    void begin_sprite_layer() const {
+    void begin_sprite_layer(Gdiplus::Graphics& dc) const {
         prepare_sprite_renderer();
-        if(sprite_renderer) {sprite_renderer->begin();sprite_renderer_active=true;}
+        if(sprite_renderer) {sprite_renderer->flush_overlay(dc);sprite_renderer->begin();sprite_renderer_active=true;}
     }
     void finish_sprite_layer(Gdiplus::Graphics& dc) const {
         if(sprite_renderer_active) {
@@ -8137,7 +8191,11 @@ struct Menu {
         const float camera=view.left, focus=view.focus;
         if (practice_scene)
             practice_scene->draw(dc, camera + view_width * 0.5f, view_width, view_height,
-                                 camera_bottom, practice_stage_tick);
+                                 camera_bottom, practice_stage_tick
+#ifdef _WIN32
+                                 ,sprite_renderer && sprite_renderer->presenting()?sprite_renderer.get():nullptr
+#endif
+                                 );
         const auto world = dc.Save();
         dc.ScaleTransform(1280.0f / view_width, 720.0f / view_height);
         if (practice_background)
@@ -8235,7 +8293,7 @@ struct Menu {
             }
         };
 #ifdef _WIN32
-        begin_sprite_layer();
+        begin_sprite_layer(dc);
 #endif
         paint_practice_effects(dc, camera, floor, true);
         draw_players(true);
@@ -8286,7 +8344,7 @@ struct Menu {
         }
         dc.Restore(world);
 #ifdef _WIN32
-        begin_sprite_layer();
+        begin_sprite_layer(dc);
 #endif
         paint_super_cutins(dc);
 #ifdef _WIN32
@@ -9731,6 +9789,8 @@ HDC canvas_dc = nullptr;
 HBITMAP canvas_bitmap = nullptr;
 HGDIOBJ canvas_previous = nullptr;
 std::unique_ptr<Gdiplus::Bitmap> canvas_image;
+BYTE* canvas_pixels=nullptr;
+int canvas_stride=0;
 
 bool create_canvas(HWND window) {
     const auto dc = GetDC(window);
@@ -9751,6 +9811,7 @@ bool create_canvas(HWND window) {
     canvas_previous = previous;
     DIBSECTION section{};
     if (!GetObjectW(canvas_bitmap,sizeof(section),&section)) return false;
+    canvas_pixels=static_cast<BYTE*>(section.dsBm.bmBits);canvas_stride=section.dsBm.bmWidthBytes;
     canvas_image=std::make_unique<Gdiplus::Bitmap>(1280,720,1280*4,PixelFormat32bppPARGB,
         static_cast<BYTE*>(section.dsBm.bmBits));
     if (canvas_image->GetLastStatus()!=Gdiplus::Ok) { canvas_image.reset(); return false; }
@@ -9892,6 +9953,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case WM_ERASEBKGND:
         return 1;
     case WM_SIZE:
+        if(wparam==SIZE_MINIMIZED && menu.sprite_renderer)menu.sprite_renderer->mark_occluded();
         InvalidateRect(window, nullptr, FALSE);
         return 0;
     case WM_PAINT: {
@@ -9901,33 +9963,56 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         GetClientRect(window, &rect);
         const auto width = std::min(rect.right, rect.bottom * 16 / 9);
         const auto height = width * 9 / 16;
-        if (width > 0 && height > 0 && canvas_dc) {
-            const auto black = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
-            // Draw directly into the DIB's premultiplied pixels. GDI+'s HDC
-            // target is much slower for the transformed translucent super art.
-            menu.paint(*canvas_image);
+        if (width > 0 && height > 0 && canvas_dc && !IsIconic(window)) {
+            bool presented=false;
+            if(!menu.direct_present_failed) {
+                try {
+                    menu.prepare_sprite_renderer();
+                    if(menu.sprite_renderer) {
+                        auto* renderer=menu.sprite_renderer.get();
+                        if(renderer->begin_frame(window,canvas_pixels,canvas_stride)) {
+                            Gdiplus::Graphics raster(canvas_image.get());raster.Clear(Gdiplus::Color::Transparent);
+                            menu.paint(raster);
+                            if(menu.sprite_renderer.get()!=renderer) throw std::runtime_error("GPU renderer changed during presentation");
+                            renderer->present(raster);
+                        }
+                        presented=true;
+                    }
+                } catch(const std::exception& error) {
+                    if(menu.sprite_renderer){menu.sprite_renderer->abort_frame();menu.sprite_renderer->detach_window();}
+                    menu.direct_present_failed=true;OutputDebugStringA(error.what());
+                }
+            }
+            if(!presented) {
+                const auto black = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+                // Draw directly into the DIB's premultiplied pixels. GDI+'s HDC
+                // target is much slower for the transformed translucent super art.
+                menu.paint(*canvas_image);
 
-            const LONG left = (rect.right - width) / 2;
-            const LONG top = (rect.bottom - height) / 2;
-            const RECT bars[] = {
-                {0, 0, rect.right, top},
-                {0, top + height, rect.right, rect.bottom},
-                {0, top, left, top + height},
-                {left + width, top, rect.right, top + height}
-            };
-            for (const auto& bar : bars) FillRect(dc, &bar, black);
-            if (width == 1280 && height == 720) {
-                BitBlt(dc, left, top, width, height, canvas_dc, 0, 0, SRCCOPY);
-            } else {
-                SetStretchBltMode(dc, HALFTONE);
-                SetBrushOrgEx(dc, 0, 0, nullptr);
-                StretchBlt(dc, left, top, width, height, canvas_dc, 0, 0, 1280, 720, SRCCOPY);
+                const LONG left = (rect.right - width) / 2;
+                const LONG top = (rect.bottom - height) / 2;
+                const RECT bars[] = {
+                    {0, 0, rect.right, top},
+                    {0, top + height, rect.right, rect.bottom},
+                    {0, top, left, top + height},
+                    {left + width, top, rect.right, top + height}
+                };
+                for (const auto& bar : bars) FillRect(dc, &bar, black);
+                if (width == 1280 && height == 720) {
+                    BitBlt(dc, left, top, width, height, canvas_dc, 0, 0, SRCCOPY);
+                } else {
+                    SetStretchBltMode(dc, HALFTONE);
+                    SetBrushOrgEx(dc, 0, 0, nullptr);
+                    StretchBlt(dc, left, top, width, height, canvas_dc, 0, 0, 1280, 720, SRCCOPY);
+                }
             }
         }
         EndPaint(window, &paint);
         return 0;
     }
     case WM_NCDESTROY:
+        if(menu.sprite_renderer)menu.sprite_renderer->detach_window();
+        canvas_pixels=nullptr;canvas_stride=0;
         canvas_image.reset();
         if (canvas_previous) SelectObject(canvas_dc, canvas_previous);
         if (canvas_bitmap) DeleteObject(canvas_bitmap);

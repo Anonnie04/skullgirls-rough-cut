@@ -112,7 +112,7 @@ if(WIN32)
         add_executable(sprite-gpu-test tests/sprite_gpu_test.cpp)
         target_include_directories(sprite-gpu-test PRIVATE src)
         target_compile_features(sprite-gpu-test PRIVATE cxx_std_17)
-        target_link_libraries(sprite-gpu-test PRIVATE gdiplus gdi32 d3d11 d3dcompiler)
+        target_link_libraries(sprite-gpu-test PRIVATE gdiplus gdi32 user32 d3d11 d3dcompiler)
         add_test(NAME sprite-gpu COMMAND sprite-gpu-test)
         set_tests_properties(sprite-gpu PROPERTIES SKIP_RETURN_CODE 77)
         # Register fighter and intro tests when the local archives are present at configure time.

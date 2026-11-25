@@ -62,6 +62,67 @@ int main() {
                 }
                 if(painted<5000 || error/samples>3 || fallback_error/samples>0.1)
                     throw std::runtime_error("GPU sprite transforms, alpha, draw order or fallback differ from the CPU reference");
+                // Compose a complete GPU frame with a CPU overlay, and verify
+                // that no download occurs until the explicit capture request.
+                std::vector<unsigned> overlay_pixels(1280*720);
+                Gdiplus::Bitmap overlay_image(1280,720,1280*4,PixelFormat32bppPARGB,
+                    reinterpret_cast<BYTE*>(overlay_pixels.data()));
+                Gdiplus::Graphics overlay(&overlay_image);overlay.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+                const auto before_downloads=gpu->readback_count();
+                gpu->begin_frame(nullptr,reinterpret_cast<const BYTE*>(overlay_pixels.data()),1280*4);
+                overlay.Clear(Gdiplus::Color(255,24,36,48));gpu->flush_overlay(overlay);gpu->begin();
+                for(unsigned i=0;i<8;++i) {
+                    const auto state=overlay.Save();overlay.TranslateTransform(330-i*16.5f,240+i*7.25f);
+                    overlay.RotateTransform(i*2.5f);overlay.ScaleTransform(i%2?-2.0f:2.0f,i==0?-0.46f:2.0f);
+                    const std::array<float,4> tint=i==0?std::array<float,4>{0,0,0,0.55f}:
+                        i==7?std::array<float,4>{1,1,1,1}:std::array<float,4>{0.65f,1,0.26f,0.4f};
+                    const std::array<float,4> uv=i==6?std::array<float,4>{0.125f,0.125f,0.625f,0.875f}:
+                        std::array<float,4>{0,0,1,1};
+                    gpu->queue(overlay,source,{-32,-64,64,64},tint,texture,uv);overlay.Restore(state);
+                }
+                gpu->finish(overlay);
+                Gdiplus::SolidBrush hud(Gdiplus::Color(150,225,80,120));
+                overlay.FillRectangle(&hud,130,80,280,40);reference.FillRectangle(&hud,130,80,280,40);
+                gpu->flush_overlay(overlay);
+                if(gpu->readback_count()!=before_downloads)throw std::runtime_error("GPU frame composition performed a CPU readback");
+                auto& captured=gpu->capture_frame();double frame_error=0;unsigned frame_samples=0;
+                for(int y=60;y<380;y+=2)for(int x=100;x<460;x+=2) {
+                    Gdiplus::Color a,b;captured.GetPixel(x,y,&a);expected.GetPixel(x,y,&b);
+                    for(unsigned shift:{0u,8u,16u,24u}) {
+                        frame_error+=std::abs(int((a.GetValue()>>shift)&255)-int((b.GetValue()>>shift)&255));++frame_samples;
+                    }
+                }
+                if(frame_error/frame_samples>3)throw std::runtime_error("GPU frame composition reordered or lost its CPU overlay");
+                gpu->abort_frame();
+                const auto portrait=skullgirls::SpriteGpu::fitted_viewport(960,720);
+                const auto wide=skullgirls::SpriteGpu::fitted_viewport(1600,720);
+                if(portrait.TopLeftY!=90 || portrait.Width!=960 || portrait.Height!=540 ||
+                   wide.TopLeftX!=160 || wide.Width!=1280 || wide.Height!=720)
+                    throw std::runtime_error("Presentation viewport stretched the frame");
+                // Exercise the real swap chain across resize and minimize/restore.
+                const auto window=CreateWindowExW(0,L"STATIC",L"GPU presentation test",WS_OVERLAPPEDWINDOW,
+                    0,0,960,720,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+                if(!window)throw std::runtime_error("Cannot create presentation test window");
+                ShowWindow(window,SW_SHOWNOACTIVATE);
+                try {
+                    for(unsigned frame=0;frame<4;++frame) {
+                        if(frame==1)SetWindowPos(window,nullptr,0,0,1100,700,SWP_NOMOVE|SWP_NOACTIVATE|SWP_NOZORDER);
+                        if(frame==2) {
+                            ShowWindow(window,SW_MINIMIZE);gpu->mark_occluded();
+                            ShowWindow(window,SW_SHOWNOACTIVATE);
+                        }
+                        if(!gpu->begin_frame(window,reinterpret_cast<const BYTE*>(overlay_pixels.data()),1280*4))
+                            throw std::runtime_error("Restored presentation remained occluded");
+                        overlay.Clear(Gdiplus::Color(255,24,36,48));gpu->present(overlay);
+                        RECT client{};GetClientRect(window,&client);
+                        if(gpu->back_buffer_size()!=std::array<unsigned,2>{unsigned(client.right),unsigned(client.bottom)})
+                            throw std::runtime_error("Swap chain did not resize with its window");
+                    }
+                    if(gpu->readback_count()!=before_downloads+1 || gpu->present_count()!=4)
+                        throw std::runtime_error("Presentation downloaded pixels or lost frames");
+                } catch(...) {gpu->detach_window();DestroyWindow(window);throw;}
+                gpu->detach_window();DestroyWindow(window);
+
                 auto* uploaded=texture.view.Get();gpu->begin();
                 gpu->queue(draw,source,{0,0,64,64},{1,1,1,1},texture);
                 if(texture.view.Get()!=uploaded)throw std::runtime_error("Sprite texture was uploaded again");
