@@ -24,6 +24,9 @@
 #include "cerebella.hpp"
 #include "peacock.hpp"
 #include "parasoul.hpp"
+#include "valentine.hpp"
+#include "fukua.hpp"
+#include "squigly.hpp"
 #include "msfortune.hpp"
 #include "robofortune.hpp"
 #include "painwheel.hpp"
@@ -36,6 +39,7 @@
 #include "filia_team.hpp"
 #include "gfs.hpp"
 #include "runtime_data.hpp"
+#include "netplay_session.hpp"
 #include "hud_portrait.hpp"
 #include "combat_scene.hpp"
 #include "stage_select.hpp"
@@ -1259,13 +1263,16 @@ struct Menu {
         std::optional<skullgirls::CerebellaPlayback> cerebella;
         std::optional<skullgirls::PeacockPlayback> peacock;
         std::optional<skullgirls::ParasoulPlayback> parasoul;
+        std::optional<skullgirls::SquiglyPlayback> squigly;
+        std::optional<skullgirls::FukuaPlayback> fukua;
+        std::optional<skullgirls::ValentinePlayback> valentine;
         std::optional<skullgirls::MsFortunePlayback> msfortune;
         std::optional<skullgirls::PainwheelPlayback> painwheel;
         std::optional<skullgirls::RoboFortunePlayback> robofortune;
-        skullgirls::CerebellaPlayback* scripted() { return robofortune ? &*robofortune : painwheel ? &*painwheel : msfortune ? &*msfortune : parasoul ? &*parasoul : peacock ? &*peacock : cerebella ? &*cerebella : nullptr; }
-        const skullgirls::CerebellaPlayback* scripted() const { return robofortune ? &*robofortune : painwheel ? &*painwheel : msfortune ? &*msfortune : parasoul ? &*parasoul : peacock ? &*peacock : cerebella ? &*cerebella : nullptr; }
-        bool scripted_attacking() const { return robofortune ? robofortune->attacking() : painwheel ? painwheel->attacking() : msfortune ? msfortune->attacking() : parasoul ? parasoul->attacking() : peacock ? peacock->attacking() : cerebella && cerebella->attacking(); }
-        unsigned scripted_grab_successor() const { return robofortune ? robofortune->grab_successor() : painwheel ? painwheel->grab_successor() : msfortune ? msfortune->grab_successor() : parasoul ? parasoul->grab_successor() : peacock ? peacock->grab_successor() : cerebella ? cerebella->grab_successor() : 0; }
+        skullgirls::CerebellaPlayback* scripted() { return squigly ? &*squigly : fukua ? &*fukua : valentine ? &*valentine : robofortune ? &*robofortune : painwheel ? &*painwheel : msfortune ? &*msfortune : parasoul ? &*parasoul : peacock ? &*peacock : cerebella ? &*cerebella : nullptr; }
+        const skullgirls::CerebellaPlayback* scripted() const { return squigly ? &*squigly : fukua ? &*fukua : valentine ? &*valentine : robofortune ? &*robofortune : painwheel ? &*painwheel : msfortune ? &*msfortune : parasoul ? &*parasoul : peacock ? &*peacock : cerebella ? &*cerebella : nullptr; }
+        bool scripted_attacking() const { return squigly ? squigly->attacking() : fukua ? fukua->attacking() : valentine ? valentine->attacking() : robofortune ? robofortune->attacking() : painwheel ? painwheel->attacking() : msfortune ? msfortune->attacking() : parasoul ? parasoul->attacking() : peacock ? peacock->attacking() : cerebella && cerebella->attacking(); }
+        unsigned scripted_grab_successor() const { return squigly ? squigly->grab_successor() : fukua ? fukua->grab_successor() : valentine ? valentine->grab_successor() : robofortune ? robofortune->grab_successor() : painwheel ? painwheel->grab_successor() : msfortune ? msfortune->grab_successor() : parasoul ? parasoul->grab_successor() : peacock ? peacock->grab_successor() : cerebella ? cerebella->grab_successor() : 0; }
 
         skullgirls::FoitVisualState visual;
         unsigned visual_strength = 0;
@@ -2140,6 +2147,9 @@ struct Menu {
         }
 
         bool burst_can_hit() const {
+            if (squigly) return !burst_connected && squigly->move==507 && squigly->hit && !squigly->hit_resolved;
+            if (fukua) return !burst_connected && fukua->move==410 && fukua->hit && !fukua->hit_resolved;
+            if (valentine) return !burst_connected && valentine->move == 465 && valentine->hit && !valentine->hit_resolved;
             if (msfortune) return !burst_connected && msfortune->move == 428 && msfortune->hit && !msfortune->hit_resolved;
             if (painwheel) return !burst_connected && painwheel->move == 457 && painwheel->hit && !painwheel->hit_resolved;
             if (parasoul) return !burst_connected && parasoul->move == 439 && parasoul->hit && !parasoul->hit_resolved;
@@ -3201,6 +3211,15 @@ struct Menu {
     bool practice_slot_is_peacock(std::size_t side, std::size_t slot) const {
         return slot < fighters[side].size() && std::string_view(roster[fighters[side][slot]]) == "peacock";
     }
+    bool practice_slot_is_squigly(std::size_t side, std::size_t slot) const {
+        return slot < fighters[side].size() && std::string_view(roster[fighters[side][slot]]) == "squigly";
+    }
+    bool practice_slot_is_fukua(std::size_t side, std::size_t slot) const {
+        return slot < fighters[side].size() && std::string_view(roster[fighters[side][slot]]) == "fukua";
+    }
+    bool practice_slot_is_valentine(std::size_t side, std::size_t slot) const {
+        return slot < fighters[side].size() && std::string_view(roster[fighters[side][slot]]) == "valentine";
+    }
     bool practice_slot_is_parasoul(std::size_t side, std::size_t slot) const {
         return slot < fighters[side].size() && std::string_view(roster[fighters[side][slot]]) == "parasoul";
     }
@@ -3214,7 +3233,7 @@ struct Menu {
         return slot < fighters[side].size() && std::string_view(roster[fighters[side][slot]]) == "robofortune";
     }
     bool practice_slot_playable(std::size_t side, std::size_t slot) const {
-        return practice_slot_is_robofortune(side, slot) || practice_slot_is_painwheel(side, slot) || practice_slot_is_filia(side, slot) || practice_slot_is_cerebella(side, slot) || practice_slot_is_peacock(side, slot) || practice_slot_is_parasoul(side, slot) || practice_slot_is_msfortune(side, slot);
+        return practice_slot_is_squigly(side, slot) || practice_slot_is_fukua(side, slot) || practice_slot_is_valentine(side, slot) || practice_slot_is_robofortune(side, slot) || practice_slot_is_painwheel(side, slot) || practice_slot_is_filia(side, slot) || practice_slot_is_cerebella(side, slot) || practice_slot_is_peacock(side, slot) || practice_slot_is_parasoul(side, slot) || practice_slot_is_msfortune(side, slot);
     }
     std::array<float, 2> practice_starts{};
     float practice_width = 0, practice_height = 0, practice_floor = 0;
@@ -3236,6 +3255,15 @@ struct Menu {
     skullgirls::FoitAnimationAsset painwheel_assets;
     std::vector<skullgirls::SelectFrame> painwheel_frames;
     std::map<unsigned, skullgirls::SelectFrame> painwheel_overlays;
+    skullgirls::FoitAnimationAsset squigly_assets;
+    std::vector<skullgirls::SelectFrame> squigly_frames;
+    std::map<unsigned, skullgirls::SelectFrame> squigly_overlays;
+    skullgirls::FoitAnimationAsset fukua_assets;
+    std::vector<skullgirls::SelectFrame> fukua_frames;
+    std::map<unsigned, skullgirls::SelectFrame> fukua_overlays;
+    skullgirls::FoitAnimationAsset valentine_assets;
+    std::vector<skullgirls::SelectFrame> valentine_frames;
+    std::map<unsigned, skullgirls::SelectFrame> valentine_overlays;
     skullgirls::FoitAnimationAsset robofortune_assets;
     std::vector<skullgirls::SelectFrame> robofortune_frames;
     std::map<unsigned, skullgirls::SelectFrame> robofortune_overlays;
@@ -3246,7 +3274,7 @@ struct Menu {
     std::map<unsigned, skullgirls::SelectFrame> msfortune_headless_overlays;
 
     const std::vector<skullgirls::SpriteFrame>& practice_metadata(const PracticeFighter& fighter) const {
-        return fighter.robofortune ? robofortune_assets.sprites : fighter.painwheel ? painwheel_assets.sprites : fighter.msfortune ? msfortune_assets.sprites : fighter.parasoul ? parasoul_assets.sprites : fighter.peacock ? peacock_assets.sprites : fighter.cerebella ? cerebella_assets.sprites : combat_metadata;
+        return fighter.squigly ? squigly_assets.sprites : fighter.fukua ? fukua_assets.sprites : fighter.valentine ? valentine_assets.sprites : fighter.robofortune ? robofortune_assets.sprites : fighter.painwheel ? painwheel_assets.sprites : fighter.msfortune ? msfortune_assets.sprites : fighter.parasoul ? parasoul_assets.sprites : fighter.peacock ? peacock_assets.sprites : fighter.cerebella ? cerebella_assets.sprites : combat_metadata;
     }
 
     void load_cerebella() {
@@ -3254,6 +3282,15 @@ struct Menu {
     }
     void load_peacock() {
         load_scripted_character("peacock", peacock_assets, peacock_frames, peacock_overlays);
+    }
+    void load_squigly() {
+        load_scripted_character("squigly", squigly_assets, squigly_frames, squigly_overlays);
+    }
+    void load_fukua() {
+        load_scripted_character("fukua", fukua_assets, fukua_frames, fukua_overlays);
+    }
+    void load_valentine() {
+        load_scripted_character("valentine", valentine_assets, valentine_frames, valentine_overlays);
     }
     void load_parasoul() {
         load_scripted_character("parasoul", parasoul_assets, parasoul_frames, parasoul_overlays);
@@ -3349,6 +3386,57 @@ struct Menu {
         return 2;
     }
 
+    unsigned squigly_team_pose(unsigned reference) const {
+        for (unsigned id = 0; id < filia_move_table.animations.size(); ++id) {
+            const auto& source = filia_move_table.animations[id];
+            const auto frame = std::find_if(source.begin(), source.end(), [&](const auto& item) { return item.sprites[1] == reference; });
+            if (frame == source.end()) continue;
+            const auto name = std::find(squigly_assets.names.begin(), squigly_assets.names.end(), filia_move_table.names[id]);
+            if (name == squigly_assets.names.end()) continue;
+            const auto& clip = squigly_assets.animations[name - squigly_assets.names.begin()];
+            if (clip.empty()) continue;
+            const auto position = static_cast<std::size_t>(frame - source.begin());
+            const auto index = std::min(position * clip.size() / source.size(), clip.size() - 1);
+            unsigned pose = 2;
+            for (std::size_t i = 0; i <= index; ++i) if (clip[i].sprites[1] > 1) pose = clip[i].sprites[1];
+            return pose;
+        }
+        return 2;
+    }
+    unsigned fukua_team_pose(unsigned reference) const {
+        for (unsigned id = 0; id < filia_move_table.animations.size(); ++id) {
+            const auto& source = filia_move_table.animations[id];
+            const auto frame = std::find_if(source.begin(), source.end(), [&](const auto& item) { return item.sprites[1] == reference; });
+            if (frame == source.end()) continue;
+            const auto name = std::find(fukua_assets.names.begin(), fukua_assets.names.end(), filia_move_table.names[id]);
+            if (name == fukua_assets.names.end()) continue;
+            const auto& clip = fukua_assets.animations[name - fukua_assets.names.begin()];
+            if (clip.empty()) continue;
+            const auto position = static_cast<std::size_t>(frame - source.begin());
+            const auto index = std::min(position * clip.size() / source.size(), clip.size() - 1);
+            unsigned pose = 2;
+            for (std::size_t i = 0; i <= index; ++i) if (clip[i].sprites[1] > 1) pose = clip[i].sprites[1];
+            return pose;
+        }
+        return 2;
+    }
+    unsigned valentine_team_pose(unsigned reference) const {
+        for (unsigned id = 0; id < filia_move_table.animations.size(); ++id) {
+            const auto& source = filia_move_table.animations[id];
+            const auto frame = std::find_if(source.begin(), source.end(), [&](const auto& item) { return item.sprites[1] == reference; });
+            if (frame == source.end()) continue;
+            const auto name = std::find(valentine_assets.names.begin(), valentine_assets.names.end(), filia_move_table.names[id]);
+            if (name == valentine_assets.names.end()) continue;
+            const auto& clip = valentine_assets.animations[name - valentine_assets.names.begin()];
+            if (clip.empty()) continue;
+            const auto position = static_cast<std::size_t>(frame - source.begin());
+            const auto index = std::min(position * clip.size() / source.size(), clip.size() - 1);
+            unsigned pose = 2;
+            for (std::size_t i = 0; i <= index; ++i) if (clip[i].sprites[1] > 1) pose = clip[i].sprites[1];
+            return pose;
+        }
+        return 2;
+    }
     unsigned parasoul_team_pose(unsigned reference) const {
         for (unsigned id = 0; id < filia_move_table.animations.size(); ++id) {
             const auto& source = filia_move_table.animations[id];
@@ -3525,7 +3613,7 @@ struct Menu {
         int target_bottom = 0;
         for (const auto& player : practice_players) {
             if (player.jump_height <= 0) continue;
-            const auto& frames = player.robofortune ? robofortune_frames : player.painwheel ? painwheel_frames : player.msfortune ? msfortune_frames :
+            const auto& frames = player.squigly ? squigly_frames : player.fukua ? fukua_frames : player.valentine ? valentine_frames : player.robofortune ? robofortune_frames : player.painwheel ? painwheel_frames : player.msfortune ? msfortune_frames :
                 player.parasoul ? parasoul_frames : player.peacock ? peacock_frames :
                 player.cerebella ? cerebella_frames : movement_frames;
             const auto pose = player.sprite();
@@ -3616,7 +3704,7 @@ struct Menu {
                 for (const auto& variant : frame.variants) script(variant.script);
             }
         };
-        for (const auto* table : std::array<const skullgirls::FoitMoveTable*, 8>{&robofortune_assets, &shared_effects, &filia_move_table, &cerebella_assets, &peacock_assets, &parasoul_assets, &msfortune_assets, &painwheel_assets}) {
+        for (const auto* table : std::array<const skullgirls::FoitMoveTable*, 11>{&fukua_assets,&squigly_assets,&valentine_assets,&robofortune_assets, &shared_effects, &filia_move_table, &cerebella_assets, &peacock_assets, &parasoul_assets, &msfortune_assets, &painwheel_assets}) {
             scan(*table);
             for (const auto& child : table->children) scan(child);
         }
@@ -3659,7 +3747,7 @@ struct Menu {
     }
 
     const char* practice_audio_bank(const skullgirls::FoitMoveTable& root) const {
-        return &root == &robofortune_assets ? "robofortune" : &root == &filia_move_table ? "filia" : &root == &cerebella_assets ? "cerebella" :
+        return &root == &squigly_assets ? "squigly" : &root == &fukua_assets ? "fukua" : &root == &valentine_assets ? "valentine" : &root == &robofortune_assets ? "robofortune" : &root == &filia_move_table ? "filia" : &root == &cerebella_assets ? "cerebella" :
             &root == &peacock_assets ? "peacock" : &root == &parasoul_assets ? "parasoul" :
             &root == &msfortune_assets ? "msfortune" : &root == &painwheel_assets ? "painwheel" : "hitspark";
     }
@@ -3667,7 +3755,7 @@ struct Menu {
     void dispatch_practice_sound(const skullgirls::FoitMoveTable& root, std::uint32_t id,
                                 const skullgirls::FoitScriptState& context, std::size_t side,
                                 std::size_t slot, float x, std::uint64_t entity_id) {
-        if (!audio) return;
+        if (!audio || rollback_replaying) return;
         struct Target {
             std::uint64_t identity = 0, entity = 0;
             std::size_t side = 0, slot = 0;
@@ -3755,12 +3843,19 @@ struct Menu {
             effect.root = &source;
             effect.entity_id = next_effect_id++;
             effect.spawner_id = spawner_id;
-            effect.floor_collision = &source == &robofortune_assets || &source == &painwheel_assets || &source == &peacock_assets || &source == &parasoul_assets || &source == &msfortune_assets;
+            effect.floor_collision = &source == &squigly_assets || &source == &fukua_assets || &source == &valentine_assets || &source == &robofortune_assets || &source == &painwheel_assets || &source == &peacock_assets || &source == &parasoul_assets || &source == &msfortune_assets;
+            effect.preserve_world_velocity_on_turn=&source==&squigly_assets;
             effect.generic = &source == &shared_effects;
             effect.authored_timeline = practice_presentation.phase == PracticePresentation::Phase::intro;
-            effect.combat_entity = &source == &robofortune_assets || &source == &painwheel_assets || &source == &peacock_assets || &source == &parasoul_assets;
+            effect.combat_entity = &source == &squigly_assets || &source == &fukua_assets || &source == &valentine_assets || &source == &robofortune_assets || &source == &painwheel_assets || &source == &peacock_assets || &source == &parasoul_assets;
             effect.initialize(request.spawn ? source.children[request.spawn->child] : source);
             effect.persistent_owner = fortune_head;
+            // Shadows and linked stance children follow authored owner-category
+            // links across move phases instead of the summoning instance.
+            effect.independent_owner=&source==&fukua_assets || &source==&squigly_assets ||
+                (&source==&robofortune_assets && request.spawn && (request.spawn->child==2 || request.spawn->child==57));
+            effect.initialize_before_links=&source==&fukua_assets || &source==&squigly_assets || &source==&valentine_assets ||
+                (&source==&robofortune_assets && request.spawn && request.spawn->child==57);
             if (fortune_head) effect.state.bits[20] = request.parent.bits[20];
             effect.side = side;
             effect.palette_slot = slot;
@@ -3788,6 +3883,7 @@ struct Menu {
             effect.state.variables[0x0f] = bounds[0];
             effect.state.variables[0x10] = bounds[1];
             effect.state.variables[0x11] = practice_height;
+            if(&source==&robofortune_assets)effect.state.variables[0x12]=0.0f;
             if (effect.combat_entity && spawner_id) effect.spawner = request.parent;
             if (request.spawn) {
                 effect.apply(request.spawn->script, request.owner.value_or(request.parent));
@@ -3823,7 +3919,7 @@ struct Menu {
     }
 
     void collect_practice_visuals(PracticeFighter& fighter, std::size_t side, std::size_t slot) {
-        const auto& root = fighter.robofortune ? static_cast<const skullgirls::FoitMoveTable&>(robofortune_assets) : fighter.painwheel ? static_cast<const skullgirls::FoitMoveTable&>(painwheel_assets) : fighter.msfortune ? static_cast<const skullgirls::FoitMoveTable&>(msfortune_assets) : fighter.parasoul ? static_cast<const skullgirls::FoitMoveTable&>(parasoul_assets) : fighter.peacock ? static_cast<const skullgirls::FoitMoveTable&>(peacock_assets) :
+        const auto& root = fighter.squigly ? static_cast<const skullgirls::FoitMoveTable&>(squigly_assets) : fighter.fukua ? static_cast<const skullgirls::FoitMoveTable&>(fukua_assets) : fighter.valentine ? static_cast<const skullgirls::FoitMoveTable&>(valentine_assets) : fighter.robofortune ? static_cast<const skullgirls::FoitMoveTable&>(robofortune_assets) : fighter.painwheel ? static_cast<const skullgirls::FoitMoveTable&>(painwheel_assets) : fighter.msfortune ? static_cast<const skullgirls::FoitMoveTable&>(msfortune_assets) : fighter.parasoul ? static_cast<const skullgirls::FoitMoveTable&>(parasoul_assets) : fighter.peacock ? static_cast<const skullgirls::FoitMoveTable&>(peacock_assets) :
             fighter.cerebella ? static_cast<const skullgirls::FoitMoveTable&>(cerebella_assets) : filia_move_table;
         if (fighter.msfortune && !practice_presentation.actors[side].intro) {
             auto& actor = *fighter.msfortune;
@@ -3930,6 +4026,12 @@ struct Menu {
             }
             effect.advance(parent, on_screen && (practice_presentation.phase == PracticePresentation::Phase::intro ||
                 (owner->attack_instance == effect.owner_instance && owner->active_normal >= 0)), frozen);
+            // Mine landing resets velocity before its authored position offset.
+            // Apply the Training floor even when there is no downward velocity.
+            if(effect.root==&robofortune_assets && effect.table==&robofortune_assets.children[2] &&
+               effect.move>=10 && effect.move<=12 && effect.y<0) {
+                effect.y=0;effect.state.variables[0xa1]=0.0f;
+            }
             if (effect.persistent_owner && effect.alive && !effect.authored_timeline && effect.move > 1) {
                 const auto bounded_x = std::clamp(effect.x, 0.0f, practice_width);
                 effect.state.variables[0x0d] = effect.x == bounded_x ? 0.0f : 1.0f;
@@ -3951,7 +4053,7 @@ struct Menu {
                     effect.captured_target = false;
                 } else {
                     victim.throw_phase = PracticeFighter::ThrowPhase::grabbed;
-                    const auto& poses = victim.robofortune ? robofortune_assets.animations[357] : victim.painwheel ? painwheel_assets.animations[387] : victim.msfortune ? msfortune_assets.animations[358] : victim.parasoul ? parasoul_assets.animations[369] : victim.peacock ? peacock_assets.animations[359] :
+                    const auto& poses = victim.squigly ? squigly_assets.animations[437] : victim.fukua ? fukua_assets.animations[340] : victim.valentine ? valentine_assets.animations[395] : victim.robofortune ? robofortune_assets.animations[357] : victim.painwheel ? painwheel_assets.animations[387] : victim.msfortune ? msfortune_assets.animations[358] : victim.parasoul ? parasoul_assets.animations[369] : victim.peacock ? peacock_assets.animations[359] :
                         victim.cerebella ? cerebella_assets.animations[378] : filia_move_table.animations[336];
                     const auto pose = static_cast<unsigned>(std::max(1.0f, effect.value(0x6f)));
                     const auto sprite = poses[std::min<std::size_t>(pose-1,poses.size()-1)].sprites[1];
@@ -3989,6 +4091,26 @@ struct Menu {
         }), practice_effects.end());
     }
 
+    bool robo_beam_part(const skullgirls::FoitEffectPlayback& effect,std::initializer_list<unsigned> children) const {
+        return effect.root==&robofortune_assets && std::any_of(children.begin(),children.end(),
+            [&](unsigned child){return effect.table==&robofortune_assets.children[child];});
+    }
+    float robo_beam_reach(const skullgirls::FoitEffectPlayback& effect) const {
+        return std::max(0.0f,effect.facing_right?practice_width-effect.x:effect.x);
+    }
+    std::optional<Gdiplus::PointF> projectile_overlap(const skullgirls::FoitEffectPlayback& effect,
+                                                     const PracticeFighter& target,bool facing) const {
+        if(robo_beam_part(effect,{34,37,39,53})) {
+            auto boxes=robofortune_assets.sprites[effect.pose-1].box_groups[0];
+            for(auto& box:boxes)box[3]=std::max(box[3],int(std::ceil(robo_beam_reach(effect))));
+            return practice_box_contact(boxes,effect.x,effect.y,effect.facing_right,
+                practice_metadata(target)[target.sprite()-1].box_groups[1],target.practice_x,target.jump_height,facing);
+        }
+        return practice_attack_overlap(effect.pose,effect.x,effect.y,effect.facing_right,target,facing,false,
+            effect.root==&peacock_assets,effect.root==&parasoul_assets,effect.root==&msfortune_assets,
+            effect.root==&painwheel_assets,effect.root==&robofortune_assets,effect.root==&valentine_assets,effect.root==&squigly_assets,effect.root==&fukua_assets);
+    }
+
     void resolve_scripted_projectiles() {
         if (practice_super_frozen()) return;
         // Set tears react to the owner's flame hitboxes as well as Quake's toggle.
@@ -4009,8 +4131,44 @@ struct Menu {
             if(source)tear.start(tear.move==9 ? (source->strength<=1?10u:11u) :
                 source->strength<=1?3u:source->strength==2?4u:5u);
         }
+        // Fukua's light shadow uses a native zero-damage grab descriptor.
+        // Enter its authored success/recovery records after a grounded capture.
+        for(auto& effect:practice_effects) {
+            if(effect.root!=&fukua_assets || effect.table!=&fukua_assets.children[10] ||
+               !effect.alive || effect.move!=5 || !effect.hit || effect.hit_resolved || effect.captured_target)continue;
+            auto& target=practice_players[1-effect.side];
+            if(target.jump_height>0 || target.jump_velocity>0 || target.hurt_group>=0 || target.blockstun ||
+               target.fenrir_captured || target.throw_phase==PracticeFighter::ThrowPhase::grabbed ||
+               target.burst_protected() || practice_point_snapped(1-effect.side))continue;
+            const auto impact=projectile_overlap(effect,target,!target.mirror(practice_facing_right(1-effect.side)));
+            if(!impact)continue;
+            effect.report_contact(false);effect.captured_target=true;effect.state.variables[0x09]=1.0f;
+            effect.capture_state=effect_parent_state(target);effect.capture_state.variables[0xb0]=0.0f;
+            effect.start(6);target.throw_phase=PracticeFighter::ThrowPhase::grabbed;
+            target.active_normal=target.queued_followup=-1;target.normal_hit=nullptr;target.hit_stop=0;
+            spawn_combat_spark(effect.side,CombatEffect::grab,*impact);
+        }
+        // Silver Chord's tail head authors a capture probe (0x72), not a
+        // FoitHit. Its Stop/End records own damage, retraction and release.
+        for(auto& effect:practice_effects) {
+            if(effect.root!=&squigly_assets || effect.table!=&squigly_assets.children[51] ||
+               !effect.alive || effect.move!=0 || effect.value(0x72)!=2 || effect.captured_target || effect.pose<=1)continue;
+            auto& target=practice_players[1-effect.side];
+            if(target.fenrir_captured || target.throw_phase==PracticeFighter::ThrowPhase::grabbed ||
+               target.burst_protected() || practice_point_snapped(1-effect.side))continue;
+            const auto impact=projectile_overlap(effect,target,!target.mirror(practice_facing_right(1-effect.side)));
+            if(!impact)continue;
+            const skullgirls::NormalHit probe{0,0,0,3};
+            const bool blocked=practice_guard(effect.side,probe,effect.x>=target.practice_x);
+            effect.report_contact(blocked);
+            if(blocked) {spawn_combat_spark(effect.side,CombatEffect::block,*impact);continue;}
+            effect.captured_target=true;effect.state.variables[0x09]=1.0f;
+            effect.capture_state=effect_parent_state(target);effect.capture_state.variables[0xb0]=0.0f;
+            target.throw_phase=PracticeFighter::ThrowPhase::grabbed;target.active_normal=target.queued_followup=-1;
+            target.normal_hit=nullptr;target.hit_stop=0;spawn_combat_spark(effect.side,CombatEffect::grab,*impact);
+        }
         for (auto& effect : practice_effects) {
-            if ((effect.root != &robofortune_assets && effect.root != &painwheel_assets && effect.root != &peacock_assets && effect.root != &parasoul_assets && effect.root != &msfortune_assets) || !effect.alive || !effect.hit ||
+            if ((effect.root != &fukua_assets && effect.root != &squigly_assets && effect.root != &valentine_assets && effect.root != &robofortune_assets && effect.root != &painwheel_assets && effect.root != &peacock_assets && effect.root != &parasoul_assets && effect.root != &msfortune_assets) || !effect.alive || !effect.hit ||
                 effect.hit_resolved || effect.hit_stop) continue;
             bool intercepted=false;
             for(auto& shield:practice_effects) {
@@ -4018,8 +4176,7 @@ struct Menu {
                     shield.side==effect.side || !shield.alive || shield.move>3)continue;
                 PracticeFighter guard;guard.practice_x=shield.x;guard.jump_height=shield.y;
                 guard.parasoul.emplace().pose=shield.pose;
-                if(const auto impact=practice_attack_overlap(effect.pose,effect.x,effect.y,effect.facing_right,guard,
-                    shield.facing_right,false,effect.root==&peacock_assets,effect.root==&parasoul_assets,effect.root==&msfortune_assets,effect.root==&painwheel_assets,effect.root==&robofortune_assets)) {
+                if(const auto impact=projectile_overlap(effect,guard,shield.facing_right)) {
                     effect.report_contact(true);
                     shield.state.variables[0x06]=1.0f;
                     spawn_combat_spark(effect.side,CombatEffect::block,*impact);
@@ -4031,8 +4188,7 @@ struct Menu {
             if (!practice_slot_playable(1 - effect.side, practice_teams[1 - effect.side].active_slot) ||
                 practice_point_snapped(1 - effect.side) || target.burst_protected() || target.ground_tech_direction ||
                 target.fenrir_captured || target.throw_phase == PracticeFighter::ThrowPhase::grabbed) continue;
-            const auto impact = practice_attack_overlap(effect.pose, effect.x, effect.y, effect.facing_right,
-                target, !target.mirror(practice_facing_right(1 - effect.side)), false, effect.root == &peacock_assets, effect.root == &parasoul_assets, effect.root == &msfortune_assets, effect.root == &painwheel_assets, effect.root == &robofortune_assets);
+            const auto impact = projectile_overlap(effect,target,!target.mirror(practice_facing_right(1-effect.side)));
             if (!impact) continue;
             const auto& hit = *effect.hit;
             const bool head_bite=effect.root==&msfortune_assets && effect.persistent_owner && (effect.move==51 || effect.move==52);
@@ -4090,7 +4246,8 @@ struct Menu {
                 dc.RotateTransform(effect.value(0xa3));
                 dc.ScaleTransform(sx, sy);
                 draw_practice_frame(dc, effect.side, effect.pose, 0, 0, !effect.facing_right, false,
-                    effect.palette_slot, effect.value(0xa6));
+                    effect.palette_slot, effect.value(0xa6),{},
+                    robo_beam_part(effect,{33,36,49,50})?robo_beam_reach(effect)/std::abs(sx):0.0f);
                 dc.Restore(saved);
             }
         }
@@ -4126,6 +4283,12 @@ struct Menu {
     }
 
     std::size_t training_value(std::string_view keyword, std::size_t fallback = 0) const {
+        // Network matches use synchronized human inputs, not Training cheats.
+        if(network_mode) {
+            if(keyword=="OPT_STR_DEATHALLOWED")return 1;
+            if(keyword=="OPT_STR_LIFEBAR_SETTING")return 1;
+            return fallback;
+        }
         const auto option = std::find_if(training_options.begin(), training_options.end(),
             [&](const auto& setting) { return setting.keyword == keyword; });
         return option == training_options.end() ? fallback : option->choice;
@@ -4240,6 +4403,9 @@ struct Menu {
         if (selected("cerebella")) load_cerebella();
         if (selected("peacock")) load_peacock();
         if (selected("painwheel")) load_painwheel();
+        if (selected("squigly")) load_squigly();
+        if (selected("fukua")) load_fukua();
+        if (selected("valentine")) load_valentine();
         if (selected("robofortune")) load_robofortune();
         if (selected("parasoul")) load_parasoul();
         if (selected("msfortune")) load_msfortune();
@@ -4456,15 +4622,13 @@ struct Menu {
     }
 
     // Keep simulation state in one snapshot, including random state, effects, and the intro clock.
-    void save_or_restore_practice(bool restore) {
-        if (!restore || !practice_snapshot) {
-            if (!restore) practice_snapshot = PracticeSnapshot{practice_players, practice_teams, hud_stats, hud_inputs,
-                previous_push_boxes, practice_camera_center, practice_camera_bottom, practice_camera_zoom,
-                practice_stage_tick, recent_dummy_contact, training_rng_state, training_random,
-                practice_presentation, practice_intro_cycle, practice_win_cycle, practice_effects, super_flash_amount, combat_presentation};
-            return;
-        }
-        const auto& saved = *practice_snapshot;
+    PracticeSnapshot capture_practice_state() const {
+        return {practice_players,practice_teams,hud_stats,hud_inputs,previous_push_boxes,
+            practice_camera_center,practice_camera_bottom,practice_camera_zoom,practice_stage_tick,
+            recent_dummy_contact,training_rng_state,training_random,practice_presentation,
+            practice_intro_cycle,practice_win_cycle,practice_effects,super_flash_amount,combat_presentation};
+    }
+    void load_practice_state(const PracticeSnapshot& saved) {
         practice_players = saved.fighters;
         practice_teams = saved.teams;
         hud_stats = saved.stats;
@@ -4483,11 +4647,62 @@ struct Menu {
         practice_effects = saved.effects;
         super_flash_amount = saved.flash_amount;
         combat_presentation = saved.combat;
+    }
+    void save_or_restore_practice(bool restore) {
+        if(!restore || !practice_snapshot) {
+            if(!restore)practice_snapshot=capture_practice_state();
+            return;
+        }
+        load_practice_state(*practice_snapshot);
         practice_keys_previous = practice_keys_held;
         practice_attack_edges = {};
-        dummy_recording.reset();
-        dummy_playing.reset();
-        dummy_armed = false;
+        dummy_recording.reset();dummy_playing.reset();dummy_armed=false;
+    }
+
+    struct NetplayState {
+        PracticeSnapshot simulation;
+        std::array<unsigned,2> held,previous,edges;
+        std::uint64_t next_entity;
+        bool paused;
+    };
+    bool network_mode=false,rollback_replaying=false;
+    // TODO(STEAM): agree on identities, teams, stage, rules, input mapping and seed
+    // through the original lobby/session setup before calling this entry point.
+    // Steam Input for the Valve controller named Work is deferred separately;
+    // native XInput controllers do not intrinsically require Steam networking.
+    void begin_netplay_match(std::uint32_t shared_seed) {
+        network_mode=true;rollback_replaying=false;practice_paused=false;
+        dummy_recording.reset();dummy_playing.reset();dummy_armed=false;
+        practice_keys_held={};practice_keys_previous={};practice_attack_edges={};
+        next_effect_id=1;practice_stage_tick=0;practice_intro_cycle=practice_win_cycle=0;
+        training_rng_state=shared_seed;training_random.seed(shared_seed);reset_practice();
+    }
+    NetplayState capture_netplay_state() const {
+        return {capture_practice_state(),practice_keys_held,practice_keys_previous,practice_attack_edges,next_effect_id,practice_paused};
+    }
+    void load_netplay_state(const NetplayState& saved) {
+        load_practice_state(saved.simulation);practice_keys_held=saved.held;
+        practice_keys_previous=saved.previous;practice_attack_edges=saved.edges;
+        next_effect_id=saved.next_entity;practice_paused=saved.paused;
+    }
+    void advance_netplay_frame(const std::array<PracticeInput,2>& inputs,bool replay) {
+        if(!network_mode)throw std::runtime_error("Netplay match has not been initialized");
+        for(unsigned side=0;side<2;++side){practice_keys_held[side]=inputs[side].held;practice_attack_edges[side]=inputs[side].attack_edges;}
+        struct Restore {bool& target;bool old;~Restore(){target=old;}} restore{rollback_replaying,rollback_replaying};
+        rollback_replaying=replay;practice_tick();
+    }
+    using NetInputDecoder=std::function<std::array<PracticeInput,2>(const std::array<skullgirls::NetInput,2>&)>;
+    skullgirls::NetplaySession::Callbacks netplay_callbacks(NetInputDecoder decode,
+        std::function<std::uint32_t(const NetplayState&)> checksum) {
+        if(!decode || !checksum)throw std::invalid_argument("Netplay requires explicit input decoding and logical-state checksum");
+        // Original FUN_0053c000 registers these callbacks with the session.
+        // TODO(INPUT): resolve original input fields before supplying the decoder;
+        // never serialize pointers in NetplayState as a network payload.
+        return {[this](){return std::make_shared<NetplayState>(capture_netplay_state());},
+            [this](const auto& state){load_netplay_state(*std::static_pointer_cast<const NetplayState>(state));},
+            [this,decode](const auto& inputs,bool replay){advance_netplay_frame(decode(inputs),replay);},
+            [checksum](const auto& state){return checksum(*std::static_pointer_cast<const NetplayState>(state));},
+            {}};
     }
 
     void toggle_dummy_recording() {
@@ -4678,6 +4893,18 @@ struct Menu {
                 defender.cerebella->start(defender.jump_height > 0 ? 437u : defender.crouching ? 431u : 422u);
                 defender.cerebella->reacting = true;
             }
+            if (defender.squigly) {
+                defender.squigly->start(defender.jump_height > 0 ? 495u : defender.crouching ? 489u : 480u);
+                defender.squigly->reacting = true;
+            }
+            if (defender.fukua) {
+                defender.fukua->start(defender.jump_height > 0 ? 398u : defender.crouching ? 392u : 383u);
+                defender.fukua->reacting = true;
+            }
+            if (defender.valentine) {
+                defender.valentine->start(defender.jump_height > 0 ? 453u : defender.crouching ? 447u : 438u);
+                defender.valentine->reacting = true;
+            }
             if (defender.parasoul) {
                 defender.parasoul->start(defender.jump_height > 0 ? 427u : defender.crouching ? 421u : 412u);
                 defender.parasoul->reacting = true;
@@ -4716,6 +4943,9 @@ struct Menu {
             if (defender.cerebella) defender.cerebella->start(448);
             if (defender.peacock) defender.peacock->start(429);
             if (defender.painwheel) defender.painwheel->start(457);
+            if (defender.squigly) defender.squigly->start(507);
+            if (defender.fukua) defender.fukua->start(410);
+            if (defender.valentine) defender.valentine->start(465);
             if (defender.parasoul) defender.parasoul->start(439);
             if (defender.msfortune) defender.msfortune->start(428);
             if (defender.robofortune) defender.robofortune->start(427);
@@ -4750,6 +4980,18 @@ struct Menu {
         if (practice_slot_is_peacock(side, slot)) {
             constexpr int moves[] = {165, 166, 167, 189, 193, 197, 170, 171, 172};
             return {moves[std::min<std::size_t>(choice, std::size(moves) - 1)]};
+        }
+        if (practice_slot_is_squigly(side, slot)) {
+            constexpr int moves[]={195,188,203,235,246,252,261,195,246};
+            return {moves[std::min<std::size_t>(choice,std::size(moves)-1)]};
+        }
+        if (practice_slot_is_fukua(side, slot)) {
+            constexpr int moves[]={158,159,160,148,149,150,144,145,146};
+            return {moves[std::min<std::size_t>(choice,std::size(moves)-1)]};
+        }
+        if (practice_slot_is_valentine(side, slot)) {
+            constexpr int moves[] = {170,171,172,198,199,200,183,184,185};
+            return {moves[std::min<std::size_t>(choice,std::size(moves)-1)]};
         }
         if (practice_slot_is_parasoul(side, slot)) {
             constexpr int moves[] = {210, 211, 212, 183, 184, 185, 215, 216, 217};
@@ -4855,6 +5097,27 @@ struct Menu {
                 kind == PracticeTag::Kind::regular ? 468u : 41u);
             actor.animate(peacock_assets);
             if (guard_tag) ++incoming.attack_instance;
+        } else if (practice_slot_is_squigly(side, slot)) {
+            auto& actor = incoming.squigly.emplace();
+            actor.facing_right = incoming.normal_facing_right;
+            actor.start(guard_tag ? static_cast<unsigned>(practice_assist_move(side, slot).move) :
+                kind == PracticeTag::Kind::regular ? 545u : 46u);
+            actor.animate(squigly_assets);
+            if (guard_tag) ++incoming.attack_instance;
+        } else if (practice_slot_is_fukua(side, slot)) {
+            auto& actor = incoming.fukua.emplace();
+            actor.facing_right = incoming.normal_facing_right;
+            actor.start(guard_tag ? static_cast<unsigned>(practice_assist_move(side, slot).move) :
+                kind == PracticeTag::Kind::regular ? 450u : 42u);
+            actor.animate(fukua_assets);
+            if (guard_tag) ++incoming.attack_instance;
+        } else if (practice_slot_is_valentine(side, slot)) {
+            auto& actor = incoming.valentine.emplace();
+            actor.facing_right = incoming.normal_facing_right;
+            actor.start(guard_tag ? static_cast<unsigned>(practice_assist_move(side, slot).move) :
+                kind == PracticeTag::Kind::regular ? 503u : 41u);
+            actor.animate(valentine_assets);
+            if (guard_tag) ++incoming.attack_instance;
         } else if (practice_slot_is_parasoul(side, slot)) {
             auto& actor = incoming.parasoul.emplace();
             actor.facing_right = incoming.normal_facing_right;
@@ -4946,7 +5209,19 @@ struct Menu {
                     if (!tag.startup_tick) point.peacock->start(462);
                     point.peacock->animate(peacock_assets);
                 }
-                if (point.parasoul) {
+                if (point.squigly) {
+                    if (!tag.startup_tick) point.squigly->start(540);
+                    point.squigly->animate(squigly_assets);
+                }
+            if (point.fukua) {
+                    if (!tag.startup_tick) point.fukua->start(443);
+                    point.fukua->animate(fukua_assets);
+                }
+            if (point.valentine) {
+                    if (!tag.startup_tick) point.valentine->start(498);
+                    point.valentine->animate(valentine_assets);
+                }
+            if (point.parasoul) {
                     if (!tag.startup_tick) point.parasoul->start(472);
                     point.parasoul->animate(parasoul_assets);
                 }
@@ -5042,6 +5317,18 @@ struct Menu {
                 if (practice_slot_is_peacock(side, slot)) fighter.peacock.emplace().facing_right = facing_right;
                 if (practice_slot_is_robofortune(side, slot)) fighter.robofortune.emplace().facing_right = facing_right;
                 if (practice_slot_is_painwheel(side, slot)) fighter.painwheel.emplace().facing_right = facing_right;
+                if (practice_slot_is_squigly(side, slot)) {
+                    auto& actor=fighter.squigly.emplace();actor.facing_right=facing_right;
+                    actor.state.variables[0x1b]=0.0f;
+                }
+            if (practice_slot_is_fukua(side, slot)) {
+                    auto& actor=fighter.fukua.emplace();actor.facing_right=facing_right;
+                    actor.state.variables[0x1b]=0.0f;
+                }
+            if (practice_slot_is_valentine(side, slot)) {
+                    auto& actor=fighter.valentine.emplace();actor.facing_right=facing_right;
+                    actor.state.variables[0x1b]=0.0f;
+                }
                 if (practice_slot_is_parasoul(side, slot)) fighter.parasoul.emplace().facing_right = facing_right;
                 if (practice_slot_is_msfortune(side, slot)) fighter.msfortune.emplace().facing_right = facing_right;
                 fighter.palette_slot = slot;
@@ -5085,7 +5372,8 @@ struct Menu {
     void sample_practice_keys() {
         const std::array inputs{
             PracticeInput{practice_keys_held[0], std::exchange(practice_attack_edges[0], 0u)},
-            training_dummy_input({practice_keys_held[1], std::exchange(practice_attack_edges[1], 0u)}),
+            network_mode ? PracticeInput{practice_keys_held[1],std::exchange(practice_attack_edges[1],0u)} :
+                training_dummy_input({practice_keys_held[1], std::exchange(practice_attack_edges[1], 0u)}),
         };
         constexpr unsigned throw_buttons = (1u << 4) | (1u << 7);
         for (std::size_t side = 0; side < practice_players.size(); ++side) {
@@ -5132,11 +5420,11 @@ struct Menu {
             });
             if (option == training_options.end()) continue;
             const bool bella = practice_slot_is_cerebella(i / 3, i % 3);
-            option->label = L"P" + std::to_wstring(i / 3 + 1) + (practice_slot_is_robofortune(i / 3, i % 3) ? L" Robo-Fortune " : practice_slot_is_painwheel(i / 3, i % 3) ? L" Painwheel " : practice_slot_is_msfortune(i / 3, i % 3) ? L" Ms. Fortune " : practice_slot_is_parasoul(i / 3, i % 3) ? L" Parasoul " : practice_slot_is_peacock(i / 3, i % 3) ? L" Peacock " : bella ? L" Cerebella " : L" Filia ") +
+            option->label = L"P" + std::to_wstring(i / 3 + 1) + (practice_slot_is_fukua(i / 3, i % 3) ? L" Fukua " : practice_slot_is_squigly(i / 3, i % 3) ? L" Squigly " : practice_slot_is_valentine(i / 3, i % 3) ? L" Valentine " : practice_slot_is_robofortune(i / 3, i % 3) ? L" Robo-Fortune " : practice_slot_is_painwheel(i / 3, i % 3) ? L" Painwheel " : practice_slot_is_msfortune(i / 3, i % 3) ? L" Ms. Fortune " : practice_slot_is_parasoul(i / 3, i % 3) ? L" Parasoul " : practice_slot_is_peacock(i / 3, i % 3) ? L" Peacock " : bella ? L" Cerebella " : L" Filia ") +
                 std::to_wstring(i % 3 + 1) + L" Assist";
             option->choices = practice_slot_is_robofortune(i / 3, i % 3) ? std::vector<std::wstring>{L"Theonite Beam (Light)",L"Theonite Beam (Medium)",L"Theonite Beam (Heavy)",L"Danger! (Light)",L"Danger! (Medium)",L"Danger! (Heavy)",L"Headrone Ram",L"Headrone Airstrike",L"Headrone Salvo"} : practice_slot_is_painwheel(i / 3, i % 3) ? std::vector<std::wstring>{L"Gae Bolga Stinger (Light)",L"Gae Bolga Stinger (Medium)",L"Gae Bolga Stinger (Heavy)",L"Buer Reaper (Light)",L"Buer Reaper (Medium)",L"Buer Reaper (Heavy)",L"Pinion Dash (Light)",L"Pinion Dash (Medium)",L"Pinion Dash (Heavy)"} : practice_slot_is_msfortune(i / 3, i % 3) ?
                 std::vector<std::wstring>{L"Fiber Upper (Light)", L"Fiber Upper (Medium)", L"Fiber Upper (Heavy)",
-                    L"Cat Scratch (Light)", L"Cat Scratch (Medium)", L"Cat Scratch (Heavy)", L"Cat Slide", L"Cat Claw", L"Head Roll"} : practice_slot_is_parasoul(i / 3, i % 3) ?
+                    L"Cat Scratch (Light)", L"Cat Scratch (Medium)", L"Cat Scratch (Heavy)", L"Cat Slide", L"Cat Claw", L"Head Roll"} : practice_slot_is_squigly(i / 3, i % 3) ? std::vector<std::wstring>{L"Arpeggio",L"Silver Chord",L"Tremolo",L"Liver Mortis",L"Draugen Punch",L"Center Stage",L"Drag n Bite",L"Arpeggio",L"Draugen Punch"} : practice_slot_is_fukua(i / 3, i % 3) ? std::vector<std::wstring>{L"Love Dart (Light)",L"Love Dart (Medium)",L"Love Dart (Heavy)",L"Drill (Light)",L"Drill (Medium)",L"Drill (Heavy)",L"Shadow (Light)",L"Shadow (Medium)",L"Shadow (Heavy)"} : practice_slot_is_valentine(i / 3, i % 3) ? std::vector<std::wstring>{L"Dead Cross (Light)",L"Dead Cross (Medium)",L"Dead Cross (Heavy)",L"Savage Bypass (Light)",L"Savage Bypass (Medium)",L"Savage Bypass (Heavy)",L"Vial Hazard A",L"Vial Hazard B",L"Vial Hazard C"} : practice_slot_is_parasoul(i / 3, i % 3) ?
                 std::vector<std::wstring>{L"Napalm Shot (Light)", L"Napalm Shot (Medium)", L"Napalm Shot (Heavy)",
                     L"Napalm Quake", L"Napalm Pillar", L"Napalm Trigger", L"Egret Call", L"Egret Dive", L"Egret Charge"} : practice_slot_is_peacock(i / 3, i % 3) ?
                 std::vector<std::wstring>{L"Screwball Cannon (Light)", L"Screwball Cannon (Medium)", L"Screwball Cannon (Heavy)",
@@ -5170,6 +5458,9 @@ struct Menu {
             if (practice_slot_is_peacock(side, 0)) practice_players[side].peacock.emplace().facing_right = side == 0;
             if (practice_slot_is_robofortune(side, 0)) practice_players[side].robofortune.emplace().facing_right = side == 0;
             if (practice_slot_is_painwheel(side, 0)) practice_players[side].painwheel.emplace().facing_right = side == 0;
+            if (practice_slot_is_squigly(side, 0)) practice_players[side].squigly.emplace().facing_right = side == 0;
+            if (practice_slot_is_fukua(side, 0)) practice_players[side].fukua.emplace().facing_right = side == 0;
+            if (practice_slot_is_valentine(side, 0)) practice_players[side].valentine.emplace().facing_right = side == 0;
             if (practice_slot_is_parasoul(side, 0)) practice_players[side].parasoul.emplace().facing_right = side == 0;
             if (practice_slot_is_msfortune(side, 0)) practice_players[side].msfortune.emplace().facing_right = side == 0;
             practice_players[side].practice_x = practice_starts[side];
@@ -5179,6 +5470,9 @@ struct Menu {
     }
 
     bool practice_input(WPARAM key, bool repeated, bool shift = false) {
+        // TODO(STEAM): submit device inputs through GGPO; pause/reset must be
+        // synchronized commands rather than local Training shortcuts.
+        if(network_mode)return false;
         if (!repeated) practice_key(key, true);
         if (!practice_paused) {
             if (repeated) return false;
@@ -5377,9 +5671,9 @@ struct Menu {
 
     std::optional<Gdiplus::PointF> practice_attack_overlap(unsigned sprite, float x, float y, bool facing,
                                                         const PracticeFighter& defender, bool defender_facing,
-                                                        bool cerebella_attack = false, bool peacock_attack = false, bool parasoul_attack = false, bool msfortune_attack = false, bool painwheel_attack = false, bool robofortune_attack = false) const {
+                                                        bool cerebella_attack = false, bool peacock_attack = false, bool parasoul_attack = false, bool msfortune_attack = false, bool painwheel_attack = false, bool robofortune_attack = false, bool valentine_attack = false, bool squigly_attack = false, bool fukua_attack = false) const {
         const auto& hurts = practice_metadata(defender)[defender.sprite() - 1].box_groups[1];
-        const auto& source = robofortune_attack ? robofortune_assets.sprites : painwheel_attack ? painwheel_assets.sprites : msfortune_attack ? msfortune_assets.sprites : parasoul_attack ? parasoul_assets.sprites : peacock_attack ? peacock_assets.sprites : cerebella_attack ? cerebella_assets.sprites : combat_metadata;
+        const auto& source = squigly_attack ? squigly_assets.sprites : fukua_attack ? fukua_assets.sprites : valentine_attack ? valentine_assets.sprites : robofortune_attack ? robofortune_assets.sprites : painwheel_attack ? painwheel_assets.sprites : msfortune_attack ? msfortune_assets.sprites : parasoul_attack ? parasoul_assets.sprites : peacock_attack ? peacock_assets.sprites : cerebella_attack ? cerebella_assets.sprites : combat_metadata;
         return practice_box_contact(source[sprite - 1].box_groups[0], x, y, facing, hurts,
             defender.practice_x, defender.jump_height, defender_facing);
     }
@@ -5460,7 +5754,7 @@ struct Menu {
                 !practice_slot_playable(1 - side, practice_teams[1 - side].active_slot)) continue;
             contacts[side] = practice_attack_overlap(fighter.sprite(), fighter.practice_x,
                 fighter.jump_height, fighter.hurt_facing_right, target,
-                !target.mirror(practice_facing_right(1 - side)), fighter.cerebella.has_value(), fighter.peacock.has_value(), fighter.parasoul.has_value(), fighter.msfortune.has_value(), fighter.painwheel.has_value(), fighter.robofortune.has_value()).has_value();
+                !target.mirror(practice_facing_right(1 - side)), fighter.cerebella.has_value(), fighter.peacock.has_value(), fighter.parasoul.has_value(), fighter.msfortune.has_value(), fighter.painwheel.has_value(), fighter.robofortune.has_value(),fighter.valentine.has_value(),fighter.squigly.has_value(),fighter.fukua.has_value()).has_value();
         }
         for (std::size_t side = 0; side < contacts.size(); ++side) {
             if (!contacts[side]) continue;
@@ -5520,7 +5814,20 @@ struct Menu {
                     if (fighter.painwheel->move == 20) fighter.painwheel->animate(painwheel_assets);
                     fighter.painwheel->start(static_cast<unsigned>(assist.command.move));
                     fighter.active_normal = assist.command.move;
-                } else if (fighter.parasoul) {
+                } else if (fighter.squigly) {
+                    fighter.squigly->facing_right = fighter.normal_facing_right;
+                    fighter.squigly->start(static_cast<unsigned>(assist.command.move));
+                    fighter.active_normal = assist.command.move;
+                } else if (fighter.fukua) {
+                    fighter.fukua->facing_right = fighter.normal_facing_right;
+                    fighter.fukua->start(static_cast<unsigned>(assist.command.move));
+                    fighter.active_normal = assist.command.move;
+                } else if (fighter.valentine) {
+                    fighter.valentine->facing_right = fighter.normal_facing_right;
+                    fighter.valentine->start(static_cast<unsigned>(assist.command.move));
+                    fighter.active_normal = assist.command.move;
+                }
+            if (fighter.parasoul) {
                     fighter.parasoul->facing_right = fighter.normal_facing_right;
                     fighter.parasoul->start(static_cast<unsigned>(assist.command.move));
                     fighter.active_normal = assist.command.move;
@@ -5542,6 +5849,9 @@ struct Menu {
             else if (fighter.peacock) tick_peacock(fighter, opponent.practice_x, left, right, side == 0);
             else if (fighter.robofortune) tick_robofortune(fighter, opponent.practice_x, left, right, side == 0);
             else if (fighter.painwheel) tick_painwheel(fighter, opponent.practice_x, left, right, side == 0);
+            else if (fighter.squigly) tick_squigly(fighter, opponent.practice_x, left, right, side == 0);
+            else if (fighter.fukua) tick_fukua(fighter, opponent.practice_x, left, right, side == 0);
+            else if (fighter.valentine) tick_valentine(fighter, opponent.practice_x, left, right, side == 0);
             else if (fighter.parasoul) tick_parasoul(fighter, opponent.practice_x, left, right, side == 0);
             else if (fighter.msfortune) tick_msfortune(fighter, opponent.practice_x, left, right, side == 0);
             else fighter.tick(opponent.practice_x, left, right, side == 0, practice_ceiling(), filia_scripts());
@@ -5613,6 +5923,39 @@ struct Menu {
                         actor.report_contact(!connected);
                     }
                 }
+                if (fighter.squigly && fighter.squigly->attacking() && fighter.squigly->hit && !fighter.squigly->hit_resolved) {
+                    auto& actor = *fighter.squigly;
+                    if (const auto impact = practice_attack_overlap(actor.pose, fighter.practice_x, fighter.jump_height,
+                        actor.facing_right, opponent, facing, false, false, false, false, false, false, false, true)) {
+                        const auto& source = *actor.hit;
+                        const skullgirls::NormalHit descriptor{0, source.stun, source.stop, source.height & 3u};
+                        fighter.hit_stop = std::max(fighter.hit_stop, unsigned(source.stop));
+                        const bool connected = strike(descriptor, -1, source.damage, fighter.practice_x, actor.facing_right, *impact);
+                        actor.report_contact(!connected);
+                    }
+                }
+                if (fighter.fukua && fighter.fukua->attacking() && fighter.fukua->hit && !fighter.fukua->hit_resolved) {
+                    auto& actor = *fighter.fukua;
+                    if (const auto impact = practice_attack_overlap(actor.pose, fighter.practice_x, fighter.jump_height,
+                        actor.facing_right, opponent, facing, false, false, false, false, false, false, false, false, true)) {
+                        const auto& source = *actor.hit;
+                        const skullgirls::NormalHit descriptor{0, source.stun, source.stop, source.height & 3u};
+                        fighter.hit_stop = std::max(fighter.hit_stop, unsigned(source.stop));
+                        const bool connected = strike(descriptor, -1, source.damage, fighter.practice_x, actor.facing_right, *impact);
+                        actor.report_contact(!connected);
+                    }
+                }
+                if (fighter.valentine && fighter.valentine->attacking() && fighter.valentine->hit && !fighter.valentine->hit_resolved) {
+                    auto& actor = *fighter.valentine;
+                    if (const auto impact = practice_attack_overlap(actor.pose, fighter.practice_x, fighter.jump_height,
+                        actor.facing_right, opponent, facing, false, false, false, false, false, false, true)) {
+                        const auto& source = *actor.hit;
+                        const skullgirls::NormalHit descriptor{0, source.stun, source.stop, source.height & 3u};
+                        fighter.hit_stop = std::max(fighter.hit_stop, unsigned(source.stop));
+                        const bool connected = strike(descriptor, -1, source.damage, fighter.practice_x, actor.facing_right, *impact);
+                        actor.report_contact(!connected);
+                    }
+                }
                 if (fighter.parasoul && fighter.parasoul->attacking() && fighter.parasoul->hit && !fighter.parasoul->hit_resolved) {
                     auto& actor = *fighter.parasoul;
                     if (const auto impact = practice_attack_overlap(actor.pose, fighter.practice_x, fighter.jump_height,
@@ -5675,7 +6018,7 @@ struct Menu {
         bool any = false;
         for (std::size_t side = 0; side < practice_players.size(); ++side) {
             auto& fighter = practice_players[side];
-            const auto& table = fighter.robofortune ? static_cast<const skullgirls::FoitMoveTable&>(robofortune_assets) : fighter.painwheel ? static_cast<const skullgirls::FoitMoveTable&>(painwheel_assets) : fighter.msfortune ? msfortune_assets : fighter.parasoul ? parasoul_assets :
+            const auto& table = fighter.squigly ? static_cast<const skullgirls::FoitMoveTable&>(squigly_assets) : fighter.fukua ? static_cast<const skullgirls::FoitMoveTable&>(fukua_assets) : fighter.valentine ? static_cast<const skullgirls::FoitMoveTable&>(valentine_assets) : fighter.robofortune ? static_cast<const skullgirls::FoitMoveTable&>(robofortune_assets) : fighter.painwheel ? static_cast<const skullgirls::FoitMoveTable&>(painwheel_assets) : fighter.msfortune ? msfortune_assets : fighter.parasoul ? parasoul_assets :
                 fighter.peacock ? peacock_assets : fighter.cerebella ? cerebella_assets : filia_move_table;
             if (table.animations.empty() || (!fighter.scripted() && choice == 4)) continue;
             // Select a variant, then let its authored successors and done signal
@@ -5723,6 +6066,9 @@ struct Menu {
             const bool facing = practice_facing_right(side);
             if (fighter.cerebella) { fighter.cerebella.emplace().facing_right = facing; fighter.cerebella->animate(cerebella_assets); }
             if (fighter.peacock) { fighter.peacock.emplace().facing_right = facing; fighter.peacock->animate(peacock_assets); }
+            if (fighter.squigly) { fighter.squigly.emplace().facing_right = facing; fighter.squigly->animate(squigly_assets); }
+            if (fighter.fukua) { fighter.fukua.emplace().facing_right = facing; fighter.fukua->animate(fukua_assets); }
+            if (fighter.valentine) { fighter.valentine.emplace().facing_right = facing; fighter.valentine->animate(valentine_assets); }
             if (fighter.parasoul) { fighter.parasoul.emplace().facing_right = facing; fighter.parasoul->animate(parasoul_assets); }
             if (fighter.painwheel) { fighter.painwheel.emplace().facing_right = facing; fighter.painwheel->animate(painwheel_assets); }
             if (fighter.robofortune) { fighter.robofortune.emplace().facing_right = facing; fighter.robofortune->animate(robofortune_assets); }
@@ -5841,7 +6187,25 @@ struct Menu {
                     fighter.peacock->animate(peacock_assets);
                     continue;
                 }
-                if (fighter.parasoul) {
+                if (fighter.squigly) {
+                    fighter.squigly->facing_right = practice_facing_right(side);
+                    fighter.squigly->start(scene.defeated[side] ? 609 : 605);
+                    fighter.squigly->animate(squigly_assets);
+                    continue;
+                }
+            if (fighter.fukua) {
+                    fighter.fukua->facing_right = practice_facing_right(side);
+                    fighter.fukua->start(scene.defeated[side] ? 507 : 506);
+                    fighter.fukua->animate(fukua_assets);
+                    continue;
+                }
+            if (fighter.valentine) {
+                    fighter.valentine->facing_right = practice_facing_right(side);
+                    fighter.valentine->start(scene.defeated[side] ? 569 : 565);
+                    fighter.valentine->animate(valentine_assets);
+                    continue;
+                }
+            if (fighter.parasoul) {
                     fighter.parasoul->facing_right = practice_facing_right(side);
                     fighter.parasoul->start(scene.defeated[side] ? 551 : 547);
                     fighter.parasoul->animate(parasoul_assets);
@@ -5879,6 +6243,9 @@ struct Menu {
             if (auto& peacock = practice_players[side].peacock) { peacock->animate(peacock_assets); continue; }
             if (auto& robo = practice_players[side].robofortune) { robo->animate(robofortune_assets); continue; }
             if (auto& painwheel = practice_players[side].painwheel) { painwheel->animate(painwheel_assets); continue; }
+            if (auto& squigly = practice_players[side].squigly) { squigly->animate(squigly_assets); continue; }
+            if (auto& fukua = practice_players[side].fukua) { fukua->animate(fukua_assets); continue; }
+            if (auto& valentine = practice_players[side].valentine) { valentine->animate(valentine_assets); continue; }
             if (auto& parasoul = practice_players[side].parasoul) { parasoul->animate(parasoul_assets); continue; }
             if (auto& msfortune = practice_players[side].msfortune) { msfortune->animate(msfortune_assets); continue; }
             if (auto& bella = practice_players[side].cerebella) {
@@ -6161,6 +6528,416 @@ struct Menu {
         fighter.normal_facing_right = actor.facing_right;
     }
 
+    void tick_squigly(PracticeFighter& fighter, float opponent_x, float left, float right, bool tie_right) {
+        auto& actor = *fighter.squigly;
+        const auto& moves = squigly_assets;
+        if (moves.animations.empty()) return;
+        if(actor.move==20)actor.animate(moves);
+        fighter.normal_hit = nullptr;
+        fighter.striking_normal = -1;
+        if (fighter.fenrir_captured || fighter.throw_phase == PracticeFighter::ThrowPhase::grabbed) return;
+        const unsigned buttons = std::exchange(fighter.pressed_punches, 0u) |
+            (std::exchange(fighter.pressed_kicks, 0u) << 3);
+        fighter.throw_input = false;
+        fighter.normal_input = -1;
+        const int direction = int(fighter.practice_right) - int(fighter.practice_left);
+        const int vertical = int(fighter.practice_up) - int(fighter.practice_down);
+        const bool grounded = fighter.jump_height <= 0 && fighter.jump_velocity <= 0;
+        const bool repeated = fighter.update_dash_input(direction, !grounded);
+        const bool facing = fighter.practice_x < opponent_x || (fighter.practice_x == opponent_x && tie_right);
+        if (grounded && actor.move <= 35) actor.facing_right = facing;
+        actor.sample(skullgirls::filia_input_direction(direction, vertical), buttons,
+            fighter.held_attack_buttons, grounded, fighter.tension);
+        actor.state.variables[0x17] = facing ? 1.0f : -1.0f;
+        actor.state.variables[0x38] = actor.facing_right ? 1.0f : -1.0f;
+        actor.state.variables[0xa0] = fighter.practice_x;
+        actor.state.variables[0xa1] = fighter.jump_height;
+        // The stance and super scripts own 0xad as scratch storage,
+        // so it must not be overwritten with an opponent position.
+        actor.state.variables[0x0f]=left;actor.state.variables[0x10]=right;
+        actor.state.variables[0x11]=practice_ceiling();
+        actor.state.variables[0x14]=(opponent_x-fighter.practice_x)*(actor.facing_right?1.0f:-1.0f);
+        if (fighter.hit_stop) { --fighter.hit_stop; return; }
+        if (fighter.burst_ticks || fighter.burst_fall_tick) {
+            actor.animate(moves);
+            actor.integrate(fighter.practice_x, fighter.jump_height, fighter.jump_velocity, left, right);
+            if (fighter.burst_ticks) --fighter.burst_ticks;
+            if (!fighter.burst_ticks && actor.move == 507) actor.start(fighter.jump_height > 0 ? 509 : 46);
+            fighter.burst_fall_tick = actor.move >= 509 && actor.move <= 512 ? 1 : 0;
+            if (actor.move < 507 || actor.move > 512) {
+                fighter.burst_ticks = 0;
+                fighter.burst_fall_tick = fighter.jump_height > 0 ? 1u : 0u;
+                actor.start(fighter.burst_fall_tick ? 509u : 46u);
+            }
+            if (fighter.jump_height == 0 && fighter.jump_velocity <= 0 && fighter.burst_fall_tick) {
+                fighter.burst_ticks = fighter.burst_fall_tick = 0;
+                actor.start(46);
+            }
+            fighter.active_normal = -1;
+            return;
+        }
+        if (fighter.blockstun || fighter.hurt_group >= 0) {
+            const bool guard = fighter.blockstun != 0;
+            const unsigned reaction = guard ? (grounded ? fighter.crouching ? 483 : 474 : 492) :
+                !grounded ? 332 : fighter.crouching ? 326 :
+                fighter.hurt_height == skullgirls::HurtHeight::high ? 310 :
+                fighter.hurt_height == skullgirls::HurtHeight::low ? 318 : 314;
+            if (!actor.reacting) { actor.start(reaction); actor.reacting = true; }
+            actor.facing_right = fighter.hurt_facing_right;
+            if (guard) --fighter.blockstun;
+            else if (fighter.hurt_hold) --fighter.hurt_hold;
+            if (!grounded) {
+                fighter.jump_height = std::max(0.0f, fighter.jump_height + fighter.jump_velocity);
+                fighter.jump_velocity = fighter.jump_height > 0 ? fighter.jump_velocity - actor.gravity : 0;
+            }
+            if (!grounded || !guard) {
+                fighter.practice_x = std::clamp(fighter.practice_x + fighter.recoil_x, left, right);
+                if (grounded) fighter.recoil_x = std::copysign(std::max(0.0f, std::abs(fighter.recoil_x) - 1.5f), fighter.recoil_x);
+            }
+            if (fighter.blockstun || fighter.hurt_hold) actor.animate(moves);
+            else {
+                fighter.guard_phase = PracticeFighter::GuardPhase::none;
+                fighter.hurt_group = -1;
+                actor.reacting = false;
+                actor.start(grounded ? fighter.crouching ? 25 : 21 : 111);
+                actor.state.variables[0x9e] = 0.0f;
+                actor.state.variables[0x9f] = fighter.jump_velocity;
+            }
+            fighter.active_normal = -1;
+            return;
+        }
+        fighter.crouching = grounded && fighter.practice_down;
+        const int relative = actor.facing_right ? direction : -direction;
+        const auto old = actor.move;
+        const bool teching = fighter.throw_phase == PracticeFighter::ThrowPhase::tech;
+        // Authored links handle commands and contact-dependent cancels.
+        const auto oldest = actor.attacking() && actor.age ? actor.age - 1 : 63;
+        auto next = actor.transition(moves, old, [&](unsigned target) {
+            // TODO(SQUIGLY): Daisy Pusher and the Raging Dragon capture backend
+            // need the original opponent-context/child grab lifecycle.
+            if(target==286 || target==289)return false;
+            return teching ? target == 151 || target == 160 || target == 298 || target == 302 : target >= 21 && target <= 297;
+        }, oldest);
+        if (next == actor.normals)
+            next = actor.transition(moves, actor.normals, [](unsigned target) { return target >= 115 && target <= 153; });
+        const bool free_ground = grounded && old >= 21 && old <= 53;
+        if (free_ground && next < actor.first_attack) {
+            const auto punches = (buttons | fighter.held_attack_buttons) & 7u;
+            if (repeated || ((buttons & 7u) && (punches & (punches - 1)) && !(buttons & 56u))) {
+                if (old <= 43) next = relative < 0 ? 43 : 40;
+            } else if (fighter.practice_up && (old <= 35 || (old == 40 && relative > 0))) {
+                next = skullgirls::filia_super_jump(fighter.dash_input_history) ?
+                    (relative > 0 ? 59 : relative < 0 ? 61 : 60) : (old == 40 ? 58 : 57);
+            } else if (next == 36) next = relative < 0 ? 43 : 40;
+        }
+        if (next != old && next != actor.normals) {
+            const unsigned cost=next==288?3:next>=282&&next<=286?1:next>=293&&next<=297?1:0;
+            if(fighter.tension>=cost) {
+                if(next>=293&&next<=296)fighter.snapback_reserve=next>=295?1:0;
+                actor.start(next);
+                if (actor.attacking()) ++fighter.attack_instance;
+            }
+        }
+        if (actor.move >= 21 && actor.move <= 29 && grounded)
+            actor.state.variables[0x9e] = actor.state.variables[0x9f] = 0.0f;
+        actor.animate(moves);
+        if(const auto meter=actor.state.team_variables[0x42])
+            fighter.tension=std::min(fighter.tension,unsigned(std::max(0.0f,*meter)/100));
+
+        if (teching && !(actor.move >= 147 && actor.move <= 151) && !(actor.move >= 156 && actor.move <= 160))
+            fighter.throw_phase = PracticeFighter::ThrowPhase::none;
+        const bool throwing = actor.move == 144 || actor.move == 152;
+        if (throwing && fighter.throw_phase == PracticeFighter::ThrowPhase::none)
+            fighter.throw_phase = PracticeFighter::ThrowPhase::start;
+        else if (!throwing && fighter.throw_phase == PracticeFighter::ThrowPhase::start)
+            fighter.throw_phase = PracticeFighter::ThrowPhase::none;
+        fighter.throw_facing_right = actor.facing_right;
+        const float before = fighter.jump_height;
+        fighter.practice_x = std::clamp(actor.value(0xa0), left, right);
+        actor.integrate(fighter.practice_x, fighter.jump_height, fighter.jump_velocity, left, right);
+        if(actor.move==244 && fighter.jump_height==0)actor.start(245);
+        else if(actor.move==272 && fighter.jump_height==0) {
+            const auto landing=actor.transition(moves,272,[](unsigned id){return id>=273&&id<=276;});
+            actor.start(landing==272?273u:landing);
+        } else if(fighter.jump_height==0 && (before>0 || (actor.move>=102&&actor.move<=110)) &&
+                  !(actor.move>=240&&actor.move<=245))actor.start(46);
+
+        fighter.active_normal = actor.attacking() ? static_cast<int>(actor.move) : -1;
+        fighter.normal_facing_right = actor.facing_right;
+    }
+
+    void tick_fukua(PracticeFighter& fighter, float opponent_x, float left, float right, bool tie_right) {
+        auto& actor = *fighter.fukua;
+        const auto& moves = fukua_assets;
+        if (moves.animations.empty()) return;
+        if(actor.move==20)actor.animate(moves);
+        fighter.normal_hit = nullptr;
+        fighter.striking_normal = -1;
+        if (fighter.fenrir_captured || fighter.throw_phase == PracticeFighter::ThrowPhase::grabbed) return;
+        const unsigned buttons = std::exchange(fighter.pressed_punches, 0u) |
+            (std::exchange(fighter.pressed_kicks, 0u) << 3);
+        fighter.throw_input = false;
+        fighter.normal_input = -1;
+        const int direction = int(fighter.practice_right) - int(fighter.practice_left);
+        const int vertical = int(fighter.practice_up) - int(fighter.practice_down);
+        const bool grounded = fighter.jump_height <= 0 && fighter.jump_velocity <= 0;
+        const bool repeated = fighter.update_dash_input(direction, !grounded);
+        const bool facing = fighter.practice_x < opponent_x || (fighter.practice_x == opponent_x && tie_right);
+        if (grounded && actor.move <= 33) actor.facing_right = facing;
+        actor.sample(skullgirls::filia_input_direction(direction, vertical), buttons,
+            fighter.held_attack_buttons, grounded, fighter.tension);
+        actor.state.variables[0x17] = facing ? 1.0f : -1.0f;
+        actor.state.variables[0x38] = actor.facing_right ? 1.0f : -1.0f;
+        actor.state.variables[0xa0] = fighter.practice_x;
+        actor.state.variables[0xa1] = fighter.jump_height;
+        // 0xad is authored scratch storage,
+        // so it must not be overwritten with an opponent position.
+        actor.state.variables[0x0f]=left;actor.state.variables[0x10]=right;
+        actor.state.variables[0x11]=practice_ceiling();
+        actor.state.variables[0x14]=(opponent_x-fighter.practice_x)*(actor.facing_right?1.0f:-1.0f);
+        if (fighter.hit_stop) { --fighter.hit_stop; return; }
+        if (fighter.burst_ticks || fighter.burst_fall_tick) {
+            actor.animate(moves);
+            actor.integrate(fighter.practice_x, fighter.jump_height, fighter.jump_velocity, left, right);
+            if (fighter.burst_ticks) --fighter.burst_ticks;
+            if (!fighter.burst_ticks && actor.move == 410) actor.start(fighter.jump_height > 0 ? 412 : 42);
+            fighter.burst_fall_tick = actor.move >= 412 && actor.move <= 415 ? 1 : 0;
+            if (actor.move < 410 || actor.move > 415) {
+                fighter.burst_ticks = 0;
+                fighter.burst_fall_tick = fighter.jump_height > 0 ? 1u : 0u;
+                actor.start(fighter.burst_fall_tick ? 412u : 42u);
+            }
+            if (fighter.jump_height == 0 && fighter.jump_velocity <= 0 && fighter.burst_fall_tick) {
+                fighter.burst_ticks = fighter.burst_fall_tick = 0;
+                actor.start(42);
+            }
+            fighter.active_normal = -1;
+            return;
+        }
+        if (fighter.blockstun || fighter.hurt_group >= 0) {
+            const bool guard = fighter.blockstun != 0;
+            const unsigned reaction = guard ? (grounded ? fighter.crouching ? 386 : 377 : 395) :
+                !grounded ? 235 : fighter.crouching ? 229 :
+                fighter.hurt_height == skullgirls::HurtHeight::high ? 213 :
+                fighter.hurt_height == skullgirls::HurtHeight::low ? 221 : 217;
+            if (!actor.reacting) { actor.start(reaction); actor.reacting = true; }
+            actor.facing_right = fighter.hurt_facing_right;
+            if (guard) --fighter.blockstun;
+            else if (fighter.hurt_hold) --fighter.hurt_hold;
+            if (!grounded) {
+                fighter.jump_height = std::max(0.0f, fighter.jump_height + fighter.jump_velocity);
+                fighter.jump_velocity = fighter.jump_height > 0 ? fighter.jump_velocity - actor.gravity : 0;
+            }
+            if (!grounded || !guard) {
+                fighter.practice_x = std::clamp(fighter.practice_x + fighter.recoil_x, left, right);
+                if (grounded) fighter.recoil_x = std::copysign(std::max(0.0f, std::abs(fighter.recoil_x) - 1.5f), fighter.recoil_x);
+            }
+            if (fighter.blockstun || fighter.hurt_hold) actor.animate(moves);
+            else {
+                fighter.guard_phase = PracticeFighter::GuardPhase::none;
+                fighter.hurt_group = -1;
+                actor.reacting = false;
+                actor.start(grounded ? fighter.crouching ? 23 : 21 : 87);
+                actor.state.variables[0x9e] = 0.0f;
+                actor.state.variables[0x9f] = fighter.jump_velocity;
+            }
+            fighter.active_normal = -1;
+            return;
+        }
+        fighter.crouching = grounded && fighter.practice_down;
+        const int relative = actor.facing_right ? direction : -direction;
+        const auto old = actor.move;
+        const bool teching = fighter.throw_phase == PracticeFighter::ThrowPhase::tech;
+        // Authored links handle commands and contact-dependent cancels.
+        const auto oldest = actor.attacking() && actor.age ? actor.age - 1 : 63;
+        auto next = actor.transition(moves, old, [&](unsigned target) {
+            // TODO(FUKUA): the five-bar throw's opponent/landing/bomb host
+            // callback is not recovered; its FOIT contains no damaging hit.
+            if(target==168)return false;
+            return teching ? target == 132 || target == 143 || target == 201 || target == 205 : target >= 21 && target <= 200;
+        }, oldest);
+        if (next == actor.normals)
+            next = actor.transition(moves, actor.normals, [](unsigned target) { return target >= 91 && target <= 134; });
+        const bool free_ground = grounded && old >= 21 && old <= 43;
+        if (free_ground && next < actor.first_attack) {
+            const auto punches = (buttons | fighter.held_attack_buttons) & 7u;
+            if (repeated || ((buttons & 7u) && (punches & (punches - 1)) && !(buttons & 56u))) {
+                if (old <= 41) next = relative < 0 ? 41 : 38;
+            } else if (fighter.practice_up && (old <= 33 || (old == 38 && relative > 0))) {
+                next = skullgirls::filia_super_jump(fighter.dash_input_history) ?
+                    (relative > 0 ? 47 : relative < 0 ? 49 : 48) : (old == 38 ? 46 : 45);
+            } else if (next == 34) next = relative < 0 ? 41 : 38;
+        }
+        if (next != old && next != actor.normals) {
+            const unsigned cost=next==168?5:next==191?3:next==172||(next>=173&&next<=175)||next==177||next==178||next==181||next==187?1:next>=196&&next<=199?1:0;
+            if(fighter.tension>=cost) {
+                if(next>=196&&next<=199)fighter.snapback_reserve=next>=198?1:0;
+                actor.start(next);
+                if (actor.attacking()) ++fighter.attack_instance;
+            }
+        }
+        if (actor.move >= 21 && actor.move <= 27 && grounded)
+            actor.state.variables[0x9e] = actor.state.variables[0x9f] = 0.0f;
+        actor.animate(moves);
+        if(const auto meter=actor.state.team_variables[0x42])
+            fighter.tension=std::min(fighter.tension,unsigned(std::max(0.0f,*meter)/100));
+
+        if (teching && !(actor.move >= 128 && actor.move <= 132) && !(actor.move >= 139 && actor.move <= 143))
+            fighter.throw_phase = PracticeFighter::ThrowPhase::none;
+        const bool throwing = (actor.move>=120&&actor.move<=123) || actor.move==133 || actor.move==134;
+        if (throwing && fighter.throw_phase == PracticeFighter::ThrowPhase::none)
+            fighter.throw_phase = PracticeFighter::ThrowPhase::start;
+        else if (!throwing && fighter.throw_phase == PracticeFighter::ThrowPhase::start)
+            fighter.throw_phase = PracticeFighter::ThrowPhase::none;
+        fighter.throw_facing_right = actor.facing_right;
+        const float before = fighter.jump_height;
+        fighter.practice_x = std::clamp(actor.value(0xa0), left, right);
+        actor.integrate(fighter.practice_x, fighter.jump_height, fighter.jump_velocity, left, right);
+        if((actor.move==184 || actor.move==185) && fighter.jump_height==0)actor.start(186);
+        else if((actor.move==188 || actor.move==189) && fighter.jump_height==0)actor.start(190);
+        else if(fighter.jump_height==0 && (before>0 || (actor.move>=78&&actor.move<=86)) &&
+                  !(actor.move>=181&&actor.move<=190))actor.start(42);
+
+        fighter.active_normal = actor.attacking() ? static_cast<int>(actor.move) : -1;
+        fighter.normal_facing_right = actor.facing_right;
+    }
+
+    void tick_valentine(PracticeFighter& fighter, float opponent_x, float left, float right, bool tie_right) {
+        auto& actor = *fighter.valentine;
+        const auto& moves = valentine_assets;
+        if (moves.animations.empty()) return;
+        fighter.normal_hit = nullptr;
+        fighter.striking_normal = -1;
+        if (fighter.fenrir_captured || fighter.throw_phase == PracticeFighter::ThrowPhase::grabbed) return;
+        const unsigned buttons = std::exchange(fighter.pressed_punches, 0u) |
+            (std::exchange(fighter.pressed_kicks, 0u) << 3);
+        fighter.throw_input = false;
+        fighter.normal_input = -1;
+        const int direction = int(fighter.practice_right) - int(fighter.practice_left);
+        const int vertical = int(fighter.practice_up) - int(fighter.practice_down);
+        const bool grounded = fighter.jump_height <= 0 && fighter.jump_velocity <= 0;
+        const bool repeated = fighter.update_dash_input(direction, !grounded);
+        const bool facing = fighter.practice_x < opponent_x || (fighter.practice_x == opponent_x && tie_right);
+        if (grounded && actor.move <= 31) actor.facing_right = facing;
+        actor.sample(skullgirls::filia_input_direction(direction, vertical), buttons,
+            fighter.held_attack_buttons, grounded, fighter.tension);
+        actor.state.variables[0x17] = facing ? 1.0f : -1.0f;
+        actor.state.variables[0x38] = actor.facing_right ? 1.0f : -1.0f;
+        actor.state.variables[0xa0] = fighter.practice_x;
+        actor.state.variables[0xa1] = fighter.jump_height;
+        // 0xad is authored scratch storage,
+        // so it must not be overwritten with an opponent position.
+        actor.state.variables[0x0f]=left;actor.state.variables[0x10]=right;
+        actor.state.variables[0x11]=practice_ceiling();
+        actor.state.variables[0x14]=(opponent_x-fighter.practice_x)*(actor.facing_right?1.0f:-1.0f);
+        if (fighter.hit_stop) { --fighter.hit_stop; return; }
+        if (fighter.burst_ticks || fighter.burst_fall_tick) {
+            actor.animate(moves);
+            actor.integrate(fighter.practice_x, fighter.jump_height, fighter.jump_velocity, left, right);
+            if (fighter.burst_ticks) --fighter.burst_ticks;
+            if (!fighter.burst_ticks && actor.move == 465) actor.start(fighter.jump_height > 0 ? 467 : 41);
+            fighter.burst_fall_tick = actor.move >= 467 && actor.move <= 470 ? 1 : 0;
+            if (actor.move < 465 || actor.move > 470) {
+                fighter.burst_ticks = 0;
+                fighter.burst_fall_tick = fighter.jump_height > 0 ? 1u : 0u;
+                actor.start(fighter.burst_fall_tick ? 467u : 41u);
+            }
+            if (fighter.jump_height == 0 && fighter.jump_velocity <= 0 && fighter.burst_fall_tick) {
+                fighter.burst_ticks = fighter.burst_fall_tick = 0;
+                actor.start(41);
+            }
+            fighter.active_normal = -1;
+            return;
+        }
+        if (fighter.blockstun || fighter.hurt_group >= 0) {
+            const bool guard = fighter.blockstun != 0;
+            const unsigned reaction = guard ? (grounded ? fighter.crouching ? 441 : 432 : 450) :
+                !grounded ? 290 : fighter.crouching ? 284 :
+                fighter.hurt_height == skullgirls::HurtHeight::high ? 268 :
+                fighter.hurt_height == skullgirls::HurtHeight::low ? 276 : 272;
+            if (!actor.reacting) { actor.start(reaction); actor.reacting = true; }
+            actor.facing_right = fighter.hurt_facing_right;
+            if (guard) --fighter.blockstun;
+            else if (fighter.hurt_hold) --fighter.hurt_hold;
+            if (!grounded) {
+                fighter.jump_height = std::max(0.0f, fighter.jump_height + fighter.jump_velocity);
+                fighter.jump_velocity = fighter.jump_height > 0 ? fighter.jump_velocity - actor.gravity : 0;
+            }
+            if (!grounded || !guard) {
+                fighter.practice_x = std::clamp(fighter.practice_x + fighter.recoil_x, left, right);
+                if (grounded) fighter.recoil_x = std::copysign(std::max(0.0f, std::abs(fighter.recoil_x) - 1.5f), fighter.recoil_x);
+            }
+            if (fighter.blockstun || fighter.hurt_hold) actor.animate(moves);
+            else {
+                fighter.guard_phase = PracticeFighter::GuardPhase::none;
+                fighter.hurt_group = -1;
+                actor.reacting = false;
+                actor.start(grounded ? fighter.crouching ? 21 : 20 : 115);
+                actor.state.variables[0x9e] = 0.0f;
+                actor.state.variables[0x9f] = fighter.jump_velocity;
+            }
+            fighter.active_normal = -1;
+            return;
+        }
+        fighter.crouching = grounded && fighter.practice_down;
+        const int relative = actor.facing_right ? direction : -direction;
+        const auto old = actor.move;
+        const bool teching = fighter.throw_phase == PracticeFighter::ThrowPhase::tech;
+        // Authored links handle commands and contact-dependent cancels.
+        const auto oldest = actor.attacking() && actor.age ? actor.age - 1 : 63;
+        auto next = actor.transition(moves, old, [&](unsigned target) {
+            // TODO(VALENTINE): recover the native secondary-capture, counter-hit
+            // and team revival host hooks before enabling these command entries.
+            // Their authored animation data alone does not implement those mechanics.
+            if(target==186 || target==187 || target==227 || target==237 || target==248 || target==249)return false;
+            return teching ? target == 159 || target == 169 || target == 256 || target == 260 : target >= 20 && target <= 255;
+        }, oldest);
+        if (next == actor.normals)
+            next = actor.transition(moves, actor.normals, [](unsigned target) { return target >= 119 && target <= 162; });
+        const bool free_ground = grounded && old >= 20 && old <= 48;
+        if (free_ground && next < actor.first_attack) {
+            const auto punches = (buttons | fighter.held_attack_buttons) & 7u;
+            if (repeated || ((buttons & 7u) && (punches & (punches - 1)) && !(buttons & 56u))) {
+                if (old <= 39) next = relative < 0 ? 39 : 36;
+            } else if (fighter.practice_up && (old <= 31 || (old == 36 && relative > 0))) {
+                next = skullgirls::filia_super_jump(fighter.dash_input_history) ?
+                    (relative > 0 ? 54 : relative < 0 ? 56 : 55) : (old == 36 ? 53 : 52);
+            } else if (next == 32) next = relative < 0 ? 39 : 36;
+        }
+        if (next != old && next != actor.normals) {
+            const unsigned cost = next==237 ? 3 : next==227 ? 2 : next==248 || next==249 ? 5 :
+                next==214 || next==215 || next==219 || next==223 || (next>=251 && next<=255) ? 1 : 0;
+            if (fighter.tension >= cost) {
+                if(next>=251 && next<=254)fighter.snapback_reserve=next>=253?1:0;
+                actor.start(next);
+                if (actor.attacking()) ++fighter.attack_instance;
+            }
+        }
+        if (actor.move >= 20 && actor.move <= 25 && grounded)
+            actor.state.variables[0x9e] = actor.state.variables[0x9f] = 0.0f;
+        actor.animate(moves);
+        if(const auto meter=actor.state.team_variables[0x42])
+            fighter.tension=std::min(fighter.tension,unsigned(std::max(0.0f,*meter)/100));
+
+        if (teching && !(actor.move >= 155 && actor.move <= 159) && !(actor.move >= 165 && actor.move <= 169))
+            fighter.throw_phase = PracticeFighter::ThrowPhase::none;
+        const bool throwing = actor.move == 152 || actor.move == 161;
+        if (throwing && fighter.throw_phase == PracticeFighter::ThrowPhase::none)
+            fighter.throw_phase = PracticeFighter::ThrowPhase::start;
+        else if (!throwing && fighter.throw_phase == PracticeFighter::ThrowPhase::start)
+            fighter.throw_phase = PracticeFighter::ThrowPhase::none;
+        fighter.throw_facing_right = actor.facing_right;
+        const float before = fighter.jump_height;
+        fighter.practice_x = std::clamp(actor.value(0xa0), left, right);
+        actor.integrate(fighter.practice_x, fighter.jump_height, fighter.jump_velocity, left, right);
+        if(actor.move==194 && fighter.jump_height==0)actor.start(195);
+        else if(actor.move==244 && fighter.jump_height==0)actor.start(245);
+        else if(actor.move>=216 && actor.move<=217 && fighter.jump_height==0)actor.start(218);
+        else if (fighter.jump_height == 0 && (before > 0 || (actor.move >= 98 && actor.move <= 107))) actor.start(41);
+        fighter.active_normal = actor.attacking() ? static_cast<int>(actor.move) : -1;
+        fighter.normal_facing_right = actor.facing_right;
+    }
+
     void tick_parasoul(PracticeFighter& fighter, float opponent_x, float left, float right, bool tie_right) {
         auto& actor = *fighter.parasoul;
         const auto& moves = parasoul_assets;
@@ -6412,6 +7189,7 @@ struct Menu {
         fighter.crouching = grounded && fighter.practice_down;
         const int relative = actor.facing_right ? direction : -direction;
         const auto old = actor.move;
+        actor.state.move_categories=moves.categories.at(old);
         const bool teching = fighter.throw_phase == PracticeFighter::ThrowPhase::tech;
         // Authored links handle commands and contact-dependent cancels.
         const auto oldest = actor.attacking() && actor.age ? actor.age - 1 : 63;
@@ -6432,9 +7210,10 @@ struct Menu {
             } else if (next == 34) next = relative < 0 ? 41 : 38;
         }
         if (next != old && next != actor.normals) {
-            const unsigned cost = next == 180 || next == 189 || next == 195 || (next >= 213 && next <= 216) ? 1 : 0;
+            const unsigned cost = next == 195 ? 3 : next == 180 || next == 189 || (next >= 213 && next <= 216) ? 1 : 0;
             if (fighter.tension >= cost) {
-                fighter.tension -= cost;
+                // Blockbusters spend the authored amount on their startup record.
+                // SuperLaser selects its 1/3/5-bar version before that write.
                 if (next >= 213 && next <= 216) fighter.snapback_reserve = next >= 215 ? 1 : 0;
                 actor.start(next);
                 if (actor.attacking()) ++fighter.attack_instance;
@@ -6443,6 +7222,8 @@ struct Menu {
         if (actor.move >= 21 && actor.move <= 27 && grounded)
             actor.state.variables[0x9e] = actor.state.variables[0x9f] = 0.0f;
         actor.animate(moves);
+        if(const auto meter=actor.state.team_variables[0x42])
+            fighter.tension=std::min(fighter.tension,unsigned(std::max(0.0f,*meter)/100));
 
         if (teching && !(actor.move >= 148 && actor.move <= 152) && !(actor.move >= 157 && actor.move <= 161))
             fighter.throw_phase = PracticeFighter::ThrowPhase::none;
@@ -6455,7 +7236,9 @@ struct Menu {
         const float before = fighter.jump_height;
         fighter.practice_x = std::clamp(actor.value(0xa0), left, right);
         actor.integrate(fighter.practice_x, fighter.jump_height, fighter.jump_velocity, left, right);
-        if (fighter.jump_height == 0 && (before > 0 || (actor.move >= 87 && actor.move <= 95)))
+        if((actor.move==193 || actor.move==200) && fighter.jump_height==0 && fighter.jump_velocity<=0)
+            actor.start(actor.move==193?194u:201u);
+        else if (fighter.jump_height == 0 && (before > 0 || (actor.move >= 87 && actor.move <= 95)))
             actor.start(44u);
         fighter.active_normal = actor.attacking() ? static_cast<int>(actor.move) : -1;
         fighter.normal_facing_right = actor.facing_right;
@@ -6878,6 +7661,18 @@ struct Menu {
                 tick_peacock(fighter, opponent_x, left, right, side == 0);
                 return;
             }
+            if (fighter.squigly) {
+                tick_squigly(fighter, opponent_x, left, right, side == 0);
+                return;
+            }
+            if (fighter.fukua) {
+                tick_fukua(fighter, opponent_x, left, right, side == 0);
+                return;
+            }
+            if (fighter.valentine) {
+                tick_valentine(fighter, opponent_x, left, right, side == 0);
+                return;
+            }
             if (fighter.parasoul) {
                 tick_parasoul(fighter, opponent_x, left, right, side == 0);
                 return;
@@ -6985,14 +7780,14 @@ struct Menu {
                 }
                 continue;
             }
-            if (player.robofortune || player.painwheel || player.peacock || player.parasoul || player.msfortune) {
+            if (player.fukua || player.squigly || player.valentine || player.robofortune || player.painwheel || player.peacock || player.parasoul || player.msfortune) {
                 const auto& actor = *player.scripted();
                 if (!player.scripted_attacking() || !actor.hit || actor.hit_resolved || player.hit_stop ||
                     player.hurt_group >= 0 || player.blockstun) continue;
-                if (player.scripted_grab_successor() && (!player.painwheel || actor.move == 146 || actor.move == 159) && ((actor.move == (player.robofortune ? 153u : player.painwheel ? 159u : player.msfortune ? 148u : player.parasoul ? 174u : 157u)) != (opponent.jump_height > 0 || opponent.jump_velocity > 0) ||
+                if (player.scripted_grab_successor() && !(player.robofortune && (actor.move==189 || actor.move==190)) && (!player.painwheel || actor.move == 146 || actor.move == 159) && ((actor.move == (player.fukua ? (actor.move==134?134u:133u) : player.squigly ? 152u : player.valentine ? 161u : player.robofortune ? 153u : player.painwheel ? 159u : player.msfortune ? 148u : player.parasoul ? 174u : 157u)) != (opponent.jump_height > 0 || opponent.jump_velocity > 0) ||
                     opponent.hurt_group >= 0 || opponent.blockstun || opponent.throw_phase == PracticeFighter::ThrowPhase::tech)) continue;
                 if (const auto impact = practice_attack_overlap(actor.pose, player.practice_x, player.jump_height,
-                    actor.facing_right, opponent, !opponent.mirror(practice_facing_right(1 - side)), false, player.peacock.has_value(), player.parasoul.has_value(), player.msfortune.has_value(), player.painwheel.has_value(), player.robofortune.has_value())) {
+                    actor.facing_right, opponent, !opponent.mirror(practice_facing_right(1 - side)), false, player.peacock.has_value(), player.parasoul.has_value(), player.msfortune.has_value(), player.painwheel.has_value(), player.robofortune.has_value(),player.valentine.has_value(),player.squigly.has_value(),player.fukua.has_value())) {
                     const auto& hit = *actor.hit;
                     cerebella_hits[side] = {0, hit.stun, hit.stop, hit.height & 3u};
                     contacts[side] = &cerebella_hits[side];
@@ -7104,7 +7899,7 @@ struct Menu {
                 }
                 continue;
             }
-            if (player.robofortune || player.painwheel || player.peacock || player.parasoul || player.msfortune) {
+            if (player.fukua || player.squigly || player.valentine || player.robofortune || player.painwheel || player.peacock || player.parasoul || player.msfortune) {
                 auto& actor = *player.scripted();
                 const bool facing_attacker = player.practice_x >= opponent.practice_x;
                 const bool guarded = hit->height_mask && practice_guard(side, *hit, facing_attacker);
@@ -7113,8 +7908,10 @@ struct Menu {
                 if (guarded) spawn_combat_spark(side, CombatEffect::block, impacts[side]);
                 else {
                     if (const auto success = player.scripted_grab_successor()) {
-                        if ((!player.painwheel || actor.move == 146 || actor.move == 159) && practice_throw_tech_requested(side)) {
-                            begin_practice_throw_tech(side, actor.move == (player.robofortune ? 153u : player.painwheel ? 159u : player.msfortune ? 148u : player.parasoul ? 174u : 157u), impacts[side]);
+                        if ((!player.painwheel || actor.move == 146 || actor.move == 159) &&
+                            (!player.valentine || actor.move==152 || actor.move==161) &&
+                            (!player.fukua || (actor.move>=120&&actor.move<=123) || actor.move==133 || actor.move==134) && practice_throw_tech_requested(side)) {
+                            begin_practice_throw_tech(side, actor.move == (player.fukua ? (actor.move==134?134u:133u) : player.squigly ? 152u : player.valentine ? 161u : player.robofortune ? 153u : player.painwheel ? 159u : player.msfortune ? 148u : player.parasoul ? 174u : 157u), impacts[side]);
                             continue;
                         }
                         actor.captured_target = true;
@@ -7130,7 +7927,7 @@ struct Menu {
                         spawn_combat_spark(side, CombatEffect::grab, impacts[side]);
                         continue;
                     }
-                    if (actor.move != (player.robofortune ? 217u : player.painwheel ? 247u : player.msfortune ? 218u : player.parasoul ? 229u : 219u) || !try_practice_snapback(side, *hit))
+                    if (actor.move != (player.fukua ? 200u : player.squigly ? 297u : player.valentine ? 255u : player.robofortune ? 217u : player.painwheel ? 247u : player.msfortune ? 218u : player.parasoul ? 229u : 219u) || !try_practice_snapback(side, *hit))
                         opponent.take_hit(*hit, facing_attacker, -1,
                             practice_hit_reaction(side, cerebella_hit_reaction(*actor.hit, opponent)));
                     record_practice_damage(side, actor.hit->damage);
@@ -7267,7 +8064,7 @@ struct Menu {
             }
             defender.throw_phase = Phase::grabbed;
             const auto pose = static_cast<unsigned>(std::max(1.0f, bella.value(0x6f)));
-            const auto& table = defender.robofortune ? robofortune_assets.animations[357] : defender.painwheel ? painwheel_assets.animations[387] : defender.msfortune ? msfortune_assets.animations[358] : defender.parasoul ? parasoul_assets.animations[369] : defender.peacock ? peacock_assets.animations[359] :
+            const auto& table = defender.squigly ? squigly_assets.animations[437] : defender.fukua ? fukua_assets.animations[340] : defender.valentine ? valentine_assets.animations[395] : defender.robofortune ? robofortune_assets.animations[357] : defender.painwheel ? painwheel_assets.animations[387] : defender.msfortune ? msfortune_assets.animations[358] : defender.parasoul ? parasoul_assets.animations[369] : defender.peacock ? peacock_assets.animations[359] :
                 defender.cerebella ? cerebella_assets.animations[378] : filia_move_table.animations[336];
             const auto& frame = table[std::min<std::size_t>(pose - 1, table.size() - 1)];
             if (frame.sprites[1] > 1) {
@@ -7278,6 +8075,7 @@ struct Menu {
             defender.practice_x = std::clamp(attacker.practice_x + bella.value(0x70) * forward, left, right);
             defender.jump_height = std::max(0.0f, attacker.jump_height + bella.value(0x71));
             defender.jump_velocity = 0;
+
         }
     }
 
@@ -7407,7 +8205,7 @@ struct Menu {
         const auto record = std::find_if(original.begin(), original.end(), [&](const auto& frame) {
             return frame.sprites[1] == filia_pose;
         });
-        const auto& poses = defender.robofortune ? robofortune_assets.animations[357] : defender.painwheel ? painwheel_assets.animations[387] : defender.msfortune ? msfortune_assets.animations[358] : defender.parasoul ? parasoul_assets.animations[369] : defender.peacock ? peacock_assets.animations[359] : cerebella_assets.animations[378];
+        const auto& poses = defender.squigly ? squigly_assets.animations[437] : defender.fukua ? fukua_assets.animations[340] : defender.valentine ? valentine_assets.animations[395] : defender.robofortune ? robofortune_assets.animations[357] : defender.painwheel ? painwheel_assets.animations[387] : defender.msfortune ? msfortune_assets.animations[358] : defender.parasoul ? parasoul_assets.animations[369] : defender.peacock ? peacock_assets.animations[359] : cerebella_assets.animations[378];
         const auto index = record == original.end() ? 0u : static_cast<unsigned>(record - original.begin());
         const auto sprite = poses[std::min<std::size_t>(index, poses.size() - 1)].sprites[1];
         if (sprite > 1) defender.scripted()->pose = defender.movement_sprite = sprite;
@@ -7444,7 +8242,17 @@ struct Menu {
             } else if (fighter.peacock) {
                 fighter.peacock->facing_right = fighter.throw_facing_right;
                 fighter.peacock->start((air ? 160u : 152u) + unsigned(side != attacker_side));
-            } else if (fighter.parasoul) {
+            } else if (fighter.squigly) {
+                fighter.squigly->facing_right = fighter.throw_facing_right;
+                fighter.squigly->start((air ? 156u : 147u) + unsigned(side != attacker_side));
+            } else if (fighter.fukua) {
+                fighter.fukua->facing_right = fighter.throw_facing_right;
+                fighter.fukua->start((air ? 139u : 128u) + unsigned(side != attacker_side));
+            } else if (fighter.valentine) {
+                fighter.valentine->facing_right = fighter.throw_facing_right;
+                fighter.valentine->start((air ? 165u : 155u) + unsigned(side != attacker_side));
+            }
+            if (fighter.parasoul) {
                 fighter.parasoul->facing_right = fighter.throw_facing_right;
                 fighter.parasoul->start((air ? 178u : 169u) + unsigned(side != attacker_side));
             } else if (fighter.robofortune) {
@@ -8236,7 +9044,7 @@ struct Menu {
                 const auto draw_travel = [&](const PracticeTeamActor& actor) {
                     const auto& travel = actor.travel;
                     if (!travel.pose) return;
-                    const auto sprite = practice_slot_is_robofortune(side, actor.slot) ? robofortune_team_pose(travel.pose) : practice_slot_is_painwheel(side, actor.slot) ? painwheel_team_pose(travel.pose) : practice_slot_is_msfortune(side, actor.slot) ? msfortune_team_pose(travel.pose) : practice_slot_is_parasoul(side, actor.slot) ? parasoul_team_pose(travel.pose) : practice_slot_is_peacock(side, actor.slot) ? peacock_team_pose(travel.pose) :
+                    const auto sprite = practice_slot_is_squigly(side, actor.slot) ? squigly_team_pose(travel.pose) : practice_slot_is_fukua(side, actor.slot) ? fukua_team_pose(travel.pose) : practice_slot_is_valentine(side, actor.slot) ? valentine_team_pose(travel.pose) : practice_slot_is_robofortune(side, actor.slot) ? robofortune_team_pose(travel.pose) : practice_slot_is_painwheel(side, actor.slot) ? painwheel_team_pose(travel.pose) : practice_slot_is_msfortune(side, actor.slot) ? msfortune_team_pose(travel.pose) : practice_slot_is_parasoul(side, actor.slot) ? parasoul_team_pose(travel.pose) : practice_slot_is_peacock(side, actor.slot) ? peacock_team_pose(travel.pose) :
                         practice_slot_is_cerebella(side, actor.slot) ?
                         cerebella_team_pose(travel.pose) : travel.pose;
                     draw_practice_frame(dc, side, sprite, travel.x - camera,
@@ -8822,7 +9630,7 @@ struct Menu {
     void draw_practice_frame(Gdiplus::Graphics& dc, std::size_t side, unsigned sprite,
                              float x, float y, bool mirror, bool shadow,
                              std::optional<std::size_t> slot = {}, float opacity = 1.0f,
-                             std::optional<std::array<float,3>> tint = {}) const {
+                             std::optional<std::array<float,3>> tint = {}, float beam_end=0.0f) const {
         const auto active = slot.value_or(practice_teams[side].active_slot);
         const auto fighter = fighters[side][active];
         const auto palette = locked_colors[side][active];
@@ -8832,10 +9640,10 @@ struct Menu {
         if(practice_teams[side].assist && practice_teams[side].assist->actor.slot==active)owner=&practice_teams[side].assist->fighter;
         const auto& intro = practice_presentation.actors[side].intro;
         const bool headless = owner->msfortune && (intro ? intro->value(0x8b) : owner->msfortune->value(0x8b)) != 0;
-        const auto& frames = practice_slot_is_robofortune(side, active) ? robofortune_frames : practice_slot_is_painwheel(side, active) ? painwheel_frames : practice_slot_is_msfortune(side, active) ? (headless?msfortune_headless_frames:msfortune_frames) : practice_slot_is_parasoul(side, active) ? parasoul_frames : peacock ? peacock_frames : bella ? cerebella_frames : movement_frames;
+        const auto& frames = practice_slot_is_squigly(side, active) ? squigly_frames : practice_slot_is_fukua(side, active) ? fukua_frames : practice_slot_is_valentine(side, active) ? valentine_frames : practice_slot_is_robofortune(side, active) ? robofortune_frames : practice_slot_is_painwheel(side, active) ? painwheel_frames : practice_slot_is_msfortune(side, active) ? (headless?msfortune_headless_frames:msfortune_frames) : practice_slot_is_parasoul(side, active) ? parasoul_frames : peacock ? peacock_frames : bella ? cerebella_frames : movement_frames;
         if (sprite >= frames.size()) return;
         const auto& frame = frames[sprite];
-        const auto& overlays = practice_slot_is_robofortune(side, active) ? robofortune_overlays : practice_slot_is_painwheel(side, active) ? painwheel_overlays : practice_slot_is_msfortune(side, active) ? (headless?msfortune_headless_overlays:msfortune_overlays) : practice_slot_is_parasoul(side, active) ? parasoul_overlays : peacock ? peacock_overlays : bella ? cerebella_overlays : jab_overlays;
+        const auto& overlays = practice_slot_is_squigly(side, active) ? squigly_overlays : practice_slot_is_fukua(side, active) ? fukua_overlays : practice_slot_is_valentine(side, active) ? valentine_overlays : practice_slot_is_robofortune(side, active) ? robofortune_overlays : practice_slot_is_painwheel(side, active) ? painwheel_overlays : practice_slot_is_msfortune(side, active) ? (headless?msfortune_headless_overlays:msfortune_overlays) : practice_slot_is_parasoul(side, active) ? parasoul_overlays : peacock ? peacock_overlays : bella ? cerebella_overlays : jab_overlays;
         const auto lookup = practice_palette_lookups.find({fighter, palette});
         if (lookup == practice_palette_lookups.end()) return;
         const auto key = std::tuple{fighter, palette, sprite | (headless?0x80000000u:0u)};
@@ -8856,18 +9664,38 @@ struct Menu {
 
         }
         cached->second.used = ++practice_bitmap_use;
-        draw_fighter_bitmap(dc, *cached->second.bitmap, frame, x, y, mirror, shadow, opacity, tint,&cached->second);
+        draw_fighter_bitmap(dc, *cached->second.bitmap, frame, x, y, mirror, shadow, opacity, tint,&cached->second,beam_end);
     }
 
     void draw_fighter_bitmap(Gdiplus::Graphics& dc, Gdiplus::Bitmap& bitmap,
                              const skullgirls::SelectFrame& frame, float x, float y,
                              bool mirror, bool shadow, float opacity = 1.0f,
-                             std::optional<std::array<float,3>> tint = {}, CachedPracticeBitmap* cache=nullptr) const {
+                             std::optional<std::array<float,3>> tint = {}, CachedPracticeBitmap* cache=nullptr,float beam_end=0.0f) const {
         const auto state = dc.Save();
         dc.TranslateTransform(x, y);
         if (mirror) dc.ScaleTransform(-1, 1);
         const Gdiplus::RectF bounds(-frame.origin_x, -frame.origin_y, float(frame.width), float(frame.height));
         if (shadow) dc.ScaleTransform(1.0f,-0.23f);
+        // Continue a narrow strip of the straight beam body. The muzzle and
+        // cannon retain their authored size instead of stretching with the ray.
+        const float tail_start=bounds.X+bounds.Width*0.75f;
+        const Gdiplus::RectF tail(tail_start,bounds.Y,std::max(0.0f,beam_end-tail_start),bounds.Height);
+        if(beam_end>0 && tail.Width>0 && beam_end>bounds.X+bounds.Width) {
+#ifdef _WIN32
+            if(sprite_renderer_active) {
+                skullgirls::SpriteGpu::Texture temporary;
+                sprite_renderer->queue(dc,bitmap,tail,{1,1,1,std::clamp(opacity,0.0f,1.0f)},
+                    cache?cache->gpu:temporary,{0.75f,0,0.76f,1},cache?cache->bitmap:std::shared_ptr<Gdiplus::Bitmap>{});
+            } else
+#endif
+            {
+                Gdiplus::ImageAttributes attributes;Gdiplus::ColorMatrix color{};
+                for(unsigned i=0;i<5;++i)color.m[i][i]=1;color.m[3][3]=std::clamp(opacity,0.0f,1.0f);
+                attributes.SetColorMatrix(&color);
+                dc.DrawImage(&bitmap,tail,frame.width*0.75f,0,frame.width*0.01f,float(frame.height),Gdiplus::UnitPixel,&attributes);
+            }
+        }
+
 #ifdef _WIN32
         if (!dc.IsVisible(bounds)) { dc.Restore(state);return; }
         if(sprite_renderer_active) {
@@ -10063,7 +10891,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     } graphics;
     Gdiplus::GdiplusStartupInput input;
     if (Gdiplus::GdiplusStartup(&graphics.token, &input, nullptr) != Gdiplus::Ok) return 1;
-    Menu menu;
+    auto menu_storage = std::make_unique<Menu>(); auto& menu = *menu_storage;
     menu_instance = &menu;
     int argc = 0;
     auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);

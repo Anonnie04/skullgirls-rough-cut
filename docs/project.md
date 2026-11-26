@@ -7,8 +7,246 @@ links the Steam installation.
 
 The preview covers the title screen, main menu, Training Options,
 character and palette selection, stage selection, and a playable Training
-Room for Filia, Cerebella, Peacock, Parasoul, Ms. Fortune, Painwheel, and Robo-Fortune.
+Room for Filia, Cerebella, Peacock, Parasoul, Ms. Fortune, Painwheel, Robo-Fortune, Valentine, Squigly, and Fukua.
 The command-line tools inspect GFS archives and export sprite layers and frames.
+
+## Fukua playable integration (2026-11-26)
+
+Fukua is selectable in Training with her own original FOIT root/child tables,
+frames, palettes, HUD art, super portrait and sound bank. She uses her native
+movement and double jump scripts, standing/crouching/air normals, chains and
+launcher follow-ups, ordinary ground/air throws, both command throws, three
+strengths of ground/air fireballs, drills and shadows. Holding a shadow's kick
+delays its release. The light shadow uses the original child grab success and
+release scripts; medium/heavy shadows use their authored strike descriptors.
+The ground/air fireball and drill supers, BlackPol sequence and three-bar
+Twice Shy bite also use their original scripts and meter debits.
+
+Root initialization uses Fukua's recovered native parameter block, including
+1.5 gravity. Independent child lifetime and owner input sampling keep shadows
+alive after the summoning animation. Her playback participates in tags, assists,
+hit/block reactions, throw techs, intros, results and local rollback snapshots.
+
+`fukua-moves-test` covers both facings, all standing/crouching/air normal inputs,
+special/super inputs and insufficient meter, spending the last required bar,
+held-shadow delay and release, strike/capture damage and victim release,
+ordinary and command throws, tag/assist playback, save/replay and a ten-hit
+launcher-to-air chain. Render samples can be regenerated on Windows with
+`fukua-moves-test <data-directory> --preview`.
+
+The five-bar SuperThrow command is disabled with `TODO(FUKUA)`: its capture
+animation releases into additional opponent/landing/bomb callbacks that have
+not been recovered. Its native timeline has no ordinary damaging hit, so the
+adapter does not substitute invented damage. Shadow health drain/refund and
+complete armor/invulnerability parity still need host-side validation. This is
+not a frame-for-frame comparison against a Fukua reference clip.
+
+Validation: Windows Release build and all 21 CTest cases pass, including all
+four Fukua intro variants. Ground, air, shadow and fireball render samples were
+inspected. The expanded roster exposed another Windows stack limit in the
+Filia fixture; the launcher and remaining test Menu objects now use heap
+allocation. No Steam/controller configuration or network transport changed.
+
+## Squigly playable integration (2026-11-26)
+
+Squigly is selectable in Training with her original FOIT move and child tables,
+sprites, palettes, HUD portrait, super cut-in and sound bank. Her adapter supports
+movement and double jumps, standing/crouching/air normals, authored chains and
+launcher follow-ups, ordinary ground/air throws, Dragon and Whip stance charging
+and releases, Silver Chord, Arpeggio, Tremolo, Liver Mortis, Draugen Punch,
+Drag n Bite, dive kicks, Squigly Battle Opera and Inferno of Leviathan.
+Assists, tags, intro variants, results and local rollback snapshots use her own
+playback state.
+
+Move timing, conditions, hitboxes, hit scripts and charge counters come from the
+original assets. Squigly's root defaults supply gravity 1.5 and the 40-tick
+stance charge threshold. Attached stance children retain their native lifetime
+across root move changes; facing changes preserve their world velocity. Dive
+kick startup carries its authored hit descriptor into the dive. The expression
+interpreter now implements the original square-root opcode used by her homing
+super. Silver Chord uses the native tail capture probe and child capture/retract
+scripts, including their damage and release writes.
+
+`squigly-moves-test` checks both facings, all six stance inputs and charge/release,
+air dive-kick inputs, normal and special impacts, super inputs and meter limits,
+super freeze, ordinary throws, tags/assists, save/replay and a five-hit
+launcher-to-air chain. The intro suite includes Squigly's variants and skips.
+Windows render previews can be regenerated with
+`squigly-moves-test <data-directory> --preview`.
+
+Daisy Pusher and Raging Dragon remain disabled with `TODO(SQUIGLY)` comments
+until their original opponent capture backend is recovered. Center Stage's
+special camera/opponent-control behavior and Silver Chord's exact guard-stun
+behavior still need recovery; their full mechanics are not claimed. This pass
+has no Squigly reference-video or measured frame-pacing comparison.
+
+Validation: Windows Release build and all 20 CTest cases pass. Ground, air and
+special render previews were inspected. The expanded roster exposed a Windows
+stack overflow in the Cerebella test fixture; its Menu now lives on the heap.
+
+## Valentine playable integration (2026-11-26)
+
+Valentine now uses her own original FOIT move/child tables, sprite layers,
+palettes, HUD art, super portrait and sound bank in Training. Her keyboard
+controls follow the existing six-button controls. Supported gameplay covers
+walking/dashing, jumping/double jumping, air movement, standing/crouching/air
+normals, authored chains and launchers, ground/air throws, Dead Cross, Savage
+Bypass, vial loading and syringe tossing, Checkmate Incision and EKG Flatliner.
+Holding the punch through Dead Cross startup selects a loaded syringe;
+releasing it keeps the shuriken, following the original conditional records.
+She also participates in assists, tags, reactions, intro variants, results,
+local save states and the rollback callback's local snapshots.
+
+The supplied 32-second, 30-fps Valentine-versus-Parasoul clip was inspected for
+ground-to-air strings, repeated air attacks and camera presentation. Its exact
+long combos/input sequences have not been reproduced frame-for-frame. The
+asset-backed test executes a nine-hit ground/launch/air chain in both directions;
+move timing, hitboxes and cancel conditions come from the original FOIT data.
+The mirrored chain exposed a script-position direction bug; the adapter now
+mirrors authored relative position changes. Dead Cross also required entering
+its startup record before evaluating immediate child links, preserving the
+original projectile hit descriptor.
+
+`valentine-moves-test` covers both facings, normal/special inputs and recovery,
+combat damage, projectile creation, super freeze and meter debit, ordinary
+throws, three-level vial loading through owner/child writes, loaded syringe
+selection, tag/assist playback, save/replay and the launcher chain. The intro
+suite includes Valentine's variants and skips. Windows preview artifacts can
+be regenerated with `valentine-moves-test <data-directory> --preview`.
+
+This is not a complete Valentine mechanics port. Poison/status consumers,
+Countervenom, the secondary-capture mechanics for Mortuary Drop and `s.Operation`,
+and `s.AED` revival still need their native host-side behavior recovered.
+Those unsupported counter/grab/revival command entries are disabled and marked
+`TODO(VALENTINE)` rather than consuming meter for an incomplete action. Vial
+loading/tossing works, but full poison effects on opponents are not claimed.
+The clip's red-haired palette is not forced; normal palette selection remains
+available. No Steam/controller settings or networking behavior were changed.
+
+## Deferred: Steam Controller and local Versus (2026-11-25)
+
+Controller/local Versus implementation is deferred at the user's request.
+No controller backend, device-join screen, or dedicated local Versus mode was
+added during this investigation. Existing two-player Training keyboard controls
+are not a completed local Versus implementation.
+
+The original game's local Versus screen recognized the connected device as
+**Xbox Controller 1**, assigned it to Player 1, and allowed Keyboard 1 on
+Player 2. The physical device is a Valve Steam Controller named **Work**. Steam's local
+controller log confirms a Steam Controller reserving XInput slot 0 and activating
+an XInput-enabled configuration for Skullgirls (Steam app 245170).
+
+Outside the Steam-launched game, a separate Win32 probe found no connected
+controller through `xinput1_4.dll`, `xinput1_3.dll`, `xinput9_1_0.dll`,
+DirectInput's attached game-controller enumeration, or WinMM joystick enumeration.
+This is consistent with Steam Input providing a per-game virtual Xbox-style
+controller. It does not prove the physical controller was disconnected.
+The original code in `output/SkullGirls.cpp` polls `XInputGetState`, enumerates
+XInput ports, and also supports DirectInput devices and disconnect detection.
+
+For this device, plan to launch the recomp as a non-Steam game through Steam
+and apply a gamepad/XInput Steam Input layout. That path still needs to be set
+up and verified; it was not configured during this investigation. Ordinary
+native XInput controllers need not depend on Steam. A separate native Steam
+Controller HID backend would be an alternative project, not existing support.
+
+The cached Skullgirls Steam Input layout inspected during the investigation
+mapped X/Y to light/medium punch, A/B to light/medium kick, RT to heavy punch,
+and LT to heavy kick, with the left pad/stick supplying directions. This was a
+configured community layout, not proof of immutable original-game defaults.
+
+When resuming:
+
+1. Add controller polling with hot-plug, deadzones, button edges, focus-loss
+   release, and distinct device identities; keep it on the simulation clock.
+2. Register and launch the recomp through Steam for the Valve Steam Controller;
+   verify actual input events rather than relying on a device label alone.
+3. Add a local Versus device/side assignment screen supporting controller plus
+   keyboard and two controllers, with each player controlling their own team.
+4. Reuse the character/stage selection and combat path, disable Training dummy
+   automation and life regeneration, and enable KO, results, rematch and exit.
+5. Test independent simultaneous inputs, disconnect/reconnect, pause ownership,
+   team selection, KO/rematch, and controller input under Steam Input.
+
+## Original multiplayer: recovered GGPO/Steam path (2026-11-25)
+
+The original game's GGPO synchronization path now has a buildable, tested port.
+`src/netplay_session.cpp` uses the matching upstream synchronization/input-queue
+core, with the original 21-byte inputs, 36-frame prediction limit, 38-state save
+ring, callback lifecycle and event numbers. Provenance and changes are recorded
+in `third_party/ggpo/PROVENANCE.md`; the MIT license is retained.
+
+This is a rollback foundation, not finished online multiplayer. No online menu
+or real network connection is enabled. The original Steam transport is deferred
+at the user's request, with `TODO(STEAM)` comments at the connection/event,
+message transport and match-setup boundaries. The peer packet protocol is a
+separate `TODO(PROTOCOL)`; no stock UDP/TCP protocol is substituted.
+
+Evidence below comes from the local `output/SkullGirls.cpp` and
+`output/functions.tsv`, not from assuming a generic GGPO integration:
+
+| Original entry point | Observed responsibility |
+| --- | --- |
+| `FUN_0053b020` / `FUN_0053b070` | Serialize/deserialize a fixed 21-byte per-player input record: three leading bytes, fifteen subsequent bytes, a little-endian 16-bit field, and a normalized boolean byte. Exact meanings of all fields still require tracing. |
+| Session setup `FUN_0053c000` | Sets input size to `0x15`; installs save/load/free/advance/event callbacks; starts a two-player session named `SkullGirls`; adds local/remote players and applies local frame delay. |
+| `ggpo_start_session` at `0x0069f440` | Allocates the embedded `Peer2PeerBackend` and passes the custom transport to its constructor. This fork's last argument is a transport object, not an assumed upstream UDP-port argument. |
+| `FUN_0069f560` | Constructs `SteamTransport`; the game passes this object into GGPO session setup. |
+| `FUN_00549bd0` | Requests the `SteamNetworkingMessages002` Steamworks interface. |
+| `FUN_0069f600` / `FUN_0069f6d0` | Receive/send through that interface; normal traffic uses channel 1, the alternate/spectating path uses channel 999, and send passes raw flags `0x21`. |
+| `FUN_0053b210` -> `FUN_005a8580` | Save-state callback and the original game-state capture implementation. |
+| `FUN_0053b280` -> `FUN_005a8f10` | Load-state callback and state reconstruction; the loader checks a save-state sentinel. |
+| `FUN_0053b2f0` | Frees the saved game state and its nested allocations. |
+| `FUN_0053b360` | Rollback advance callback: synchronize both players' inputs, advance simulation, then call `ggpo_advance_frame`. |
+| Update path near `0x0053c9a1` | Submit local input, synchronize inputs, advance the game only on success, then advance GGPO. Handles not-synchronized and prediction-threshold errors explicitly. |
+| `FUN_0053b4e0` -> `FUN_0053ce70` | Connection, synchronization, running, disconnect, timesync, interruption and resume events. Timesync converts frame differences using the 60 Hz game clock. |
+
+The executable exports the GGPO API directly; its PE imports do not identify a
+separate GGPO DLL to drop into the recomp. Copying those exported wrappers alone
+would omit the embedded rollback backend and transport. A generic upstream GGPO
+library is not evidence of a byte-compatible copy of this modified fork.
+
+The recomp now supplies local save/load/advance callback adapters in
+`Menu::netplay_callbacks`. Snapshots deep-copy fighters, teams, effects, RNG,
+input history, camera and combat presentation, and restore the entity ID counter.
+Replay suppresses repeated sound dispatch. Network-mode simulation accepts both
+human input streams, applies damage and KO, and disables Training dummy automation,
+life regeneration, slow motion and local Training shortcuts. It is not exposed
+as a selectable online mode yet.
+
+The rebuilt state layout intentionally differs from the original memory image.
+Saved states stay local; asset pointers are never sent or hashed as raw object
+bytes. The callback factory requires an explicit input decoder and logical
+checksum. Original input-field meanings and a complete production desync checksum
+still need tracing/audit; the combat test's input mapping and checksum are
+explicitly test fixtures, not claimed original wire semantics.
+
+Validation: `netplay-test` checks the byte codec, frame delay, lifecycle,
+prediction barrier and two simulated peers with delayed/reordered/duplicate
+inputs. `netplay-moves-test` drives the actual combat callbacks through 1,000
+frames, the 15-hit Gregor/Fenrir combo, both human sides and delayed input;
+both peers must converge to confirmed-input execution after actual rollbacks.
+These tests validate the exercised states, not every team/character combination
+or cross-machine determinism. The upstream time-sync estimator is available;
+its precise parity with the original fork and live pacing still need validation.
+
+Remaining original-path work:
+
+- `TODO(STEAM)`: initialize the original networking interface; lobby/identity and
+  match agreement; authenticated send/receive (channel 1, spectator channel 999,
+  raw flags `0x21`); connection/interruption/resume/disconnect callbacks. A non-Steam
+  shortcut alone has not been verified to initialize Steamworks networking.
+- `TODO(PROTOCOL)`: recover/port the modified peer backend's packets, handshake,
+  acknowledgements/retransmission, input compression, spectators and statistics.
+  The current transport boundary accepts decoded player frames in tests only.
+- `TODO(INPUT)`: trace the original 21-byte fields into gameplay actions and
+  synchronized control commands; agree on teams, stage, rules and RNG seed.
+- Finish state/checksum coverage and exercise two real processes under latency,
+  packet loss, disconnect/reconnect, time sync and long matches before enabling
+  the online UI. Original-game interoperability has not been established.
+
+The deferred physical Steam Controller named **Work** uses Steam Input separately
+from the online networking dependency; native XInput devices do not inherently
+require Steam networking.
 
 ## Linux asset tools and Steam data
 
@@ -457,8 +695,46 @@ Robo-Fortune is selectable as a playable fighter and Training opponent, with
 her own decoded sprites, palettes, normal command dispatcher, movement, throws,
 team entry/exit poses, HUD portrait and hitboxes. Her hit reactions run the
 original move scripts through launch, wall/floor bounce, knockdown and wakeup.
-Her broader special-move behavior still shares the reconstruction's existing
-script and combat support; this does not establish complete character parity.
+Her special-move adapter now enables ground/air Theonite Beams, Danger!,
+three summoned headrones with Ram/Airstrike/Salvo commands, Catastrophe Cannon's
+1/3/5-bar branches, Magnetic Trap's airborne catch/slam, and Systemic Circuit
+Breaker's timer/explosion/recovery. Holding a punch through Cannon startup
+selects its 3-bar branch; holding Heavy Punch selects 5 bars when available.
+Ground beams and all three Cannon levels continue to the arena boundary, with
+matching full-range hitboxes. The beam body extends independently of the cannon
+and muzzle artwork; tests cover opponents and visible rays at both ends of a
+3,750-unit arena.
+Releasing the punches selects 1 bar. Circuit Breaker costs 3 bars. Meter writes
+execute on the authored startup record, with no second host-side debit.
+
+The FOIT reader retains move-category hashes used by the original membership
+operations (`FUN_00491b40` / `FUN_0069dc70`). Child/spawner bit writes and
+read-after-write ordering preserve head slot identities and Circuit Breaker's
+handshake. Robo-Fortune also advances signed engine timers, mirrors relative
+script movement, retains independent headrone entities across later attacks,
+clamps landed mines to the Training floor, and takes the authored landing
+branches for Magnetic Trap and the Circuit Breaker return.
+
+The dedicated `robofortune-moves` asset-backed test covers all six beam
+commands, Danger! strengths, headrone commands, all three Cannon levels,
+insufficient meter, Snapback, airborne catch/release, Circuit Breaker's timed
+explosion/recharge, pause/save restoration, three simultaneous heads and reclaimed
+slots, in both facings. A newly spawned controller enters its initialization
+record before checking expiry links, so the 900-tick Circuit Breaker countdown
+is initialized before it can expire.
+The magnetic catch fixture places an airborne victim into the authored catch
+region; it is not evidence of a particular original-game combo. This extends
+playable support; it does not establish complete character parity or exact
+original damage scaling.
+
+The final Windows build passed all 16 CTest checks. A visible 18-second level-5
+Cannon probe drew 1078/1080 simulation ticks with zero gameplay sprite/stage
+readbacks and no fallback. Cut-in draws measured 6.53 ms median, 11.24 ms p95,
+and 26.26 ms maximum; tick 0 and one later draw opportunity were skipped.
+This is not a zero-stutter or uniform display-pacing guarantee. Local evidence:
+`build/robo-check/live-queue2.csv`, `robo-cutin.png`, and `robo-level5.png`.
+The post-run PNG captures explicitly download pixels and are excluded from the
+zero-readback measurement. The display remained at the measured 75 Hz.
 
 The `reference-moves` asset-backed test checks the 15-hit sequence in both
 facings on a compact playfield, two meter spends, pause and independent save

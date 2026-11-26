@@ -453,7 +453,7 @@ int main(int argc, char** argv)
         verify_ringlet(asset.children.at(0).animations.at(0));
         verify_commands(asset, true);
         verify_commands(asset, false);
-        Menu menu;
+        auto menu_storage = std::make_unique<Menu>(); auto& menu = *menu_storage;
         menu.game_data = directory;
         menu.load_movement_frames();
         const auto filia = std::find(roster.begin(), roster.end(), std::string_view("filia"));

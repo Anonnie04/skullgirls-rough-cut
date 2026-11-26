@@ -17,6 +17,20 @@ if(MINGW)
     target_link_options(skullgirls-gfs PRIVATE -municode)
 endif()
 
+include(CTest)
+
+# Original multiplayer's GGPO synchronization core; Steam transport is intentionally separate.
+add_library(skullgirls_netplay src/netplay_session.cpp
+    third_party/ggpo/sync.cpp third_party/ggpo/input_queue.cpp
+    third_party/ggpo/game_input.cpp third_party/ggpo/timesync.cpp third_party/ggpo/log.cpp)
+target_include_directories(skullgirls_netplay PUBLIC src PRIVATE third_party/ggpo)
+target_compile_features(skullgirls_netplay PUBLIC cxx_std_17)
+if(BUILD_TESTING)
+    add_executable(netplay-test tests/netplay_test.cpp)
+    target_link_libraries(netplay-test PRIVATE skullgirls_netplay)
+    add_test(NAME netplay COMMAND netplay-test)
+endif()
+
 # Core sprite decoding and FOIT parsing also support the standalone tools.
 add_library(skullgirls_sprite src/sprite_rle.cpp src/sprite_layer.cpp src/foit.cpp src/foit_script.cpp)
 target_include_directories(skullgirls_sprite PUBLIC src)
@@ -26,7 +40,6 @@ add_executable(skullgirls-rle src/rle_main.cpp)
 target_link_libraries(skullgirls-rle PRIVATE skullgirls_sprite)
 
 # The FOIT and runtime path tests use synthetic data.
-include(CTest)
 if(BUILD_TESTING)
     add_executable(stage-select-test tests/stage_select_test.cpp)
     target_include_directories(stage-select-test PRIVATE src)
@@ -65,7 +78,7 @@ if(UNIX AND NOT APPLE)
     pkg_check_modules(LINUX_PLATFORM REQUIRED IMPORTED_TARGET sdl2 cairo gl)
     find_package(Threads REQUIRED)
     add_executable(skullgirls-main-menu src/audio.cpp src/main_menu.cpp src/menu_timings.cpp src/title_scene.cpp src/fighter_select.cpp src/select_idle.cpp)
-    target_link_libraries(skullgirls-main-menu PRIVATE skullgirls_sprite_assets PkgConfig::LINUX_PLATFORM Threads::Threads ${CMAKE_DL_LIBS})
+    target_link_libraries(skullgirls-main-menu PRIVATE skullgirls_sprite_assets skullgirls_netplay PkgConfig::LINUX_PLATFORM Threads::Threads ${CMAKE_DL_LIBS})
     add_custom_command(TARGET skullgirls-main-menu POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/runtime"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:skullgirls-main-menu>" "${CMAKE_SOURCE_DIR}/runtime/"
@@ -80,9 +93,9 @@ if(UNIX AND NOT APPLE)
             add_test(NAME audio-assets COMMAND audio-data-test "${SKULLGIRLS_TEST_DATA_DIR}")
             add_test(NAME audio-output COMMAND skullgirls-main-menu "${SKULLGIRLS_TEST_DATA_DIR}" --audio-smoke-test)
             set_tests_properties(audio-output PROPERTIES ENVIRONMENT "SDL_AUDIODRIVER=dummy")
-            foreach(fighter IN ITEMS filia cerebella peacock parasoul msfortune painwheel intro reference)
+            foreach(fighter IN ITEMS filia cerebella peacock parasoul msfortune painwheel robofortune valentine squigly fukua intro reference netplay)
                 add_executable(${fighter}-moves-test tests/${fighter}_moves_test.cpp src/menu_timings.cpp src/title_scene.cpp src/fighter_select.cpp src/select_idle.cpp)
-                target_link_libraries(${fighter}-moves-test PRIVATE skullgirls_sprite_assets PkgConfig::LINUX_PLATFORM Threads::Threads)
+                target_link_libraries(${fighter}-moves-test PRIVATE skullgirls_sprite_assets skullgirls_netplay PkgConfig::LINUX_PLATFORM Threads::Threads)
                 add_test(NAME ${fighter}-moves COMMAND ${fighter}-moves-test "${SKULLGIRLS_TEST_DATA_DIR}")
             endforeach()
         endif()
@@ -97,7 +110,7 @@ endif()
 
 if(WIN32)
     add_executable(skullgirls-main-menu WIN32 src/main_menu.cpp src/menu_timings.cpp src/title_scene.cpp src/fighter_select.cpp src/select_idle.cpp)
-    target_link_libraries(skullgirls-main-menu PRIVATE skullgirls_sprite_assets shell32 gdi32 user32 gdiplus d3d11 d3dcompiler)
+    target_link_libraries(skullgirls-main-menu PRIVATE skullgirls_sprite_assets skullgirls_netplay shell32 gdi32 user32 gdiplus d3d11 d3dcompiler)
     if(MSVC)
         target_link_options(skullgirls-main-menu PRIVATE /LARGEADDRESSAWARE)
     endif()
@@ -118,9 +131,9 @@ if(WIN32)
         # Register fighter and intro tests when the local archives are present at configure time.
         set(SKULLGIRLS_TEST_DATA_DIR "${CMAKE_SOURCE_DIR}/runtime/data02" CACHE PATH "Game data directory for asset-backed tests")
         if(EXISTS "${SKULLGIRLS_TEST_DATA_DIR}/characters-foits.gfs")
-            foreach(fighter IN ITEMS filia cerebella peacock parasoul msfortune painwheel intro reference)
+            foreach(fighter IN ITEMS filia cerebella peacock parasoul msfortune painwheel robofortune valentine squigly fukua intro reference netplay)
                 add_executable(${fighter}-moves-test tests/${fighter}_moves_test.cpp src/menu_timings.cpp src/title_scene.cpp src/fighter_select.cpp src/select_idle.cpp)
-                target_link_libraries(${fighter}-moves-test PRIVATE skullgirls_sprite_assets shell32 gdi32 user32 gdiplus d3d11 d3dcompiler)
+                target_link_libraries(${fighter}-moves-test PRIVATE skullgirls_sprite_assets skullgirls_netplay shell32 gdi32 user32 gdiplus d3d11 d3dcompiler)
                 if(MSVC)
                     target_link_options(${fighter}-moves-test PRIVATE /LARGEADDRESSAWARE)
                 endif()

@@ -346,7 +346,8 @@ void read_move_table(Reader& reader, std::size_t file_size, std::size_t sprite_c
         if (flags & ~15u) throw std::runtime_error("Invalid FOIT animation flags");
         if (flags & 12) reader.take(4);
         reader.take(1);
-        if (flags & 2) reader.take(4 * reader.number(1)); // Move category hashes, not sound events.
+        auto& categories=table.categories.emplace_back();
+        if(flags&2) {const auto n=reader.number(1);for(unsigned j=0;j<n;++j)categories.push_back(reader.number(4));}
         const auto transitions = reader.number(2);
         const auto successor = reader.number(2);
         if (successor >= count) throw std::runtime_error("Invalid FOIT animation successor");

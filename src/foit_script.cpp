@@ -58,6 +58,13 @@ std::optional<float> read_operand(FoitOperand operand, const FoitScriptState& st
 std::optional<bool> compare(const FoitExpression& expression, const FoitScriptState& state)
 {
     if (!expression.comparison) return std::nullopt;
+    // FUN_00491b40 tests the current move's category list, not a numeric hash.
+    if((expression.opcode==0x20 || expression.opcode==0x21) && expression.left.flags==1 &&
+       expression.left.value==0x27 && expression.destination.flags==0x24 && state.move_categories) {
+        const auto& tags=*state.move_categories;
+        const bool found=std::find(tags.begin(),tags.end(),expression.destination.value)!=tags.end();
+        return expression.opcode==0x20?found:!found;
+    }
     const auto left = read_operand(expression.left, state);
     const auto right = read_operand(expression.destination, state);
     if (!left || !right) return std::nullopt;
@@ -199,11 +206,19 @@ void apply_foit_assignment(const FoitExpression& expression, FoitScriptState& st
     std::optional<bool>* bit = nullptr;
     if (destination.flags == 1 && destination.value < state.variables.size() && state.variables[destination.value])
         variable = &state.variables[destination.value];
+    else if (destination.flags == 0x19 && destination.value < state.team_variables.size() && state.team_variables[destination.value])
+        variable = &state.team_variables[destination.value];
     else if (destination.flags == 0x20) {
         if (const auto index = bit_index(destination); index && state.bits[*index]) bit = &state.bits[*index];
     }
     if (!variable && !bit) return;
 
+    if((expression.opcode==0x26 || expression.opcode==0x27) && variable &&
+       expression.left.flags==1 && expression.left.value==0x27 && expression.right.flags==0x24 && state.move_categories) {
+        const auto& tags=*state.move_categories;
+        const bool found=std::find(tags.begin(),tags.end(),expression.right.value)!=tags.end();
+        *variable=float(expression.opcode==0x26?found:!found);return;
+    }
     const auto left = read_operand(expression.left, state);
     const auto right = read_operand(expression.right, state);
     if (!left || !right) return;
@@ -238,6 +253,9 @@ void apply_foit_assignment(const FoitExpression& expression, FoitScriptState& st
         }
         break;
     }
+    // FUN_0048c260 dispatches 0x1f to FUN_0048bbf0 (square root).
+    // Squigly's homing sphere uses it to normalize its direction and speed.
+    case 0x1f: if (*left < 0) return; result = std::sqrt(*left); break;
     case 0x23: result = *left == *right ? 1.0f : 0.0f; break;
     case 0x24: result = *left != *right ? 1.0f : 0.0f; break;
     case 0x25: result = *left < *right ? 1.0f : 0.0f; break;

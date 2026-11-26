@@ -548,7 +548,8 @@ int main(int argc, char** argv)
     ULONG_PTR graphics = 0;
     if (Gdiplus::GdiplusStartup(&graphics, &input, nullptr) != Gdiplus::Ok) return 2;
     try {
-        Menu menu;
+        auto fixture = std::make_unique<Menu>();
+        auto& menu = *fixture;
         menu.game_data = argv[1];
         menu.load_cerebella();
         check(menu.cerebella_assets.animations.size() == 564 && menu.cerebella_frames[2].width,

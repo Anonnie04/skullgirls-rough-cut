@@ -104,6 +104,7 @@ struct FoitTickOverride {
 // Move-indexed arrays describe one entity. Child entities share the root sprite table.
 struct FoitMoveTable {
     std::vector<FoitAnimation> animations;
+    std::vector<std::vector<std::uint32_t>> categories;
     std::vector<std::uint16_t> successors;
     std::vector<std::vector<FoitTransition>> transitions;
     std::vector<std::vector<FoitExpression>> scripts;

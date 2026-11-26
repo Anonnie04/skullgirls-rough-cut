@@ -19,6 +19,7 @@ struct CerebellaPlayback {
     unsigned move = stand, record = 0, ticks = 0, age = 0, pose = 2, held = 0;
     bool facing_right = true, hit_resolved = false, reacting = false;
     bool captured_target = false, release_target = false;
+    bool mirror_script_positions = false;
     unsigned throw_damage = 0;
     unsigned throw_damage_slot = 0x78;
     FoitScriptState target_state = [] {
@@ -158,7 +159,14 @@ struct CerebellaPlayback {
 
     void apply(const std::vector<FoitExpression>& script) {
         const float previous_facing = value(0x38);
-        apply_foit_script(script, state, defaults());
+        if(!mirror_script_positions)apply_foit_script(script,state,defaults());
+        else for(const auto& expression:script) {
+            const float previous_x=value(0xa0);
+            apply_foit_script({expression},state,defaults());
+            if(mirror_script_positions && value(0x38)<0 && expression.destination.flags==1 &&
+               expression.destination.value==0xa0 && expression.left.flags==1 && expression.left.value==0xa0 &&
+               (expression.opcode==2 || expression.opcode==3))state.variables[0xa0]=previous_x-(value(0xa0)-previous_x);
+        }
         for (auto expression : script) {
             if (expression.destination.flags != 0x28) continue;
             expression.destination.flags = 0x20;

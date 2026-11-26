@@ -13,6 +13,7 @@ using FoitInputHistory = std::array<FoitInputSample, 64>;
 
 // A missing value means that the host has not implemented that engine variable.
 struct FoitScriptState {
+    std::optional<std::vector<std::uint32_t>> move_categories;
     std::array<std::optional<float>, 0xb1> variables{};
     std::array<std::optional<bool>, 128> bits{};
     std::array<std::optional<float>, 0xb1> team_variables{};

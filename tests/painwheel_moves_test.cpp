@@ -253,7 +253,7 @@ int main(int argc, char** argv)
     Gdiplus::GdiplusStartupInput input; ULONG_PTR graphics=0;
     if(Gdiplus::GdiplusStartup(&graphics,&input,nullptr)!=Gdiplus::Ok) return 2;
     int result=0;
-    try { Menu menu; menu.game_data=argv[1]; menu.load_painwheel();
+    try { auto menu_storage = std::make_unique<Menu>(); auto& menu = *menu_storage; menu.game_data=argv[1]; menu.load_painwheel();
         check(menu.painwheel_assets.animations.size()==578 && menu.painwheel_frames[2].width,"Painwheel assets load");
         commands(menu,true); commands(menu,false); specials(menu,true); specials(menu,false); training(menu); movement_and_defense(menu); teams(menu); charge_and_armor(menu); combat(menu); projectile_regressions(menu);
         std::cout<<"Painwheel moves, projectiles, throws, and Training integration passed\n";

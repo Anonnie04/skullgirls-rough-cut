@@ -287,7 +287,7 @@ int main(int argc, char** argv)
     if (Gdiplus::GdiplusStartup(&graphics, &input, nullptr) != Gdiplus::Ok) return 2;
     int result = 0;
     try {
-        Menu menu;
+        auto menu_storage = std::make_unique<Menu>(); auto& menu = *menu_storage;
         menu.game_data = argv[1];
         setup(menu);
 #ifdef _WIN32

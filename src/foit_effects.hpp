@@ -114,7 +114,10 @@ struct FoitEffectPlayback {
     float x = 0, y = 0, offset_x = 0, offset_y = 0;
     bool facing_right = true, alive = true, generic = false;
     bool floor_collision = false;
+    bool preserve_world_velocity_on_turn = false;
     bool persistent_owner = false;
+    bool independent_owner = false;
+    bool initialize_before_links = false;
     // Round presentation uses the original live record evaluator. Combat's
     // character adapters still own their input/collision and movement clocks.
     bool authored_timeline = false;
@@ -167,6 +170,23 @@ struct FoitEffectPlayback {
 
     // Resolve reads from related entities before passing the operation to the local evaluator.
     FoitExpression bind(FoitExpression expression, const FoitScriptState& parent) const {
+        const bool category_test=expression.comparison && (expression.opcode==0x20 || expression.opcode==0x21);
+        const bool category_value=!expression.comparison && (expression.opcode==0x26 || expression.opcode==0x27);
+        if((category_test || category_value) && expression.left.value==0x27) {
+            const auto flags=expression.left.flags;
+            const auto* source=flags==9?&parent:flags==0x91?(spawner?&*spawner:&parent):
+                flags==0x11?&opponent:flags==1?&state:nullptr;
+            const auto hash=category_test?expression.destination:expression.right;
+            if(source && source->move_categories && hash.flags==0x24) {
+                const auto& tags=*source->move_categories;
+                bool result=std::find(tags.begin(),tags.end(),hash.value)!=tags.end();
+                if(expression.opcode==0x21 || expression.opcode==0x27)result=!result;
+                const float number=result?1.0f:0.0f;std::uint32_t bits;std::memcpy(&bits,&number,4);
+                expression.left={0,bits};expression.right={0,0};
+                if(category_test){expression.opcode=0x12;expression.destination={0,0x3f800000};}
+                else expression.opcode=1;
+            }
+        }
         const auto operand = [&](FoitOperand item) {
             if (captured_target && item.flags == 0x41 && item.value < capture_state.variables.size() && capture_state.variables[item.value]) {
                 const float number = *capture_state.variables[item.value];
@@ -198,7 +218,8 @@ struct FoitEffectPlayback {
         return expression;
     }
 
-    void apply(const std::vector<FoitExpression>& script, const FoitScriptState& parent) {
+    void apply(const std::vector<FoitExpression>& script, FoitScriptState parent) {
+        const auto previous_facing=value(0x38);
         for (const auto& original : script) {
             auto expression = bind(original, parent);
             for (auto* operand : {&expression.left, &expression.right}) {
@@ -223,7 +244,7 @@ struct FoitEffectPlayback {
                 apply_foit_assignment(expression, capture_state);
                 continue;
             }
-            if (!expression.comparison && (expression.destination.flags == 9 || expression.destination.flags == 0x91 || expression.destination.flags == 0x28)) {
+            if (!expression.comparison && (expression.destination.flags == 9 || expression.destination.flags == 0x91 || expression.destination.flags == 0x28 || expression.destination.flags == 0xb0)) {
                 // Resolve child operands now; the caller commits these owner handshakes
                 // before advancing the next child or collecting a nested spawn.
                 for (auto* operand : {&expression.left, &expression.right}) {
@@ -233,9 +254,10 @@ struct FoitEffectPlayback {
                         std::memcpy(&operand->value, &number, sizeof(number));
                     }
                 }
-                const bool to_spawner = expression.destination.flags == 0x91 && spawner.has_value();
-                expression.destination.flags = expression.destination.flags == 0x28 ? 0x20 : 1;
+                const bool to_spawner = (expression.destination.flags == 0x91 || expression.destination.flags == 0xb0) && spawner.has_value();
+                expression.destination.flags = (expression.destination.flags == 0x28 || expression.destination.flags == 0xb0) ? 0x20 : 1;
                 (to_spawner ? spawner_writes : parent_writes).push_back(expression);
+                apply_foit_assignment(expression,to_spawner?*spawner:parent);
                 continue;
             }
             if (!expression.comparison && expression.opcode == 1 && expression.destination.flags == 1 &&
@@ -252,6 +274,11 @@ struct FoitEffectPlayback {
                     state.variables[0xa0] = previous_x - (value(0xa0) - previous_x);
             }
         }
+        // Same facing-change velocity remap used by CerebellaPlayback::apply.
+        // Squigly's tail head faces its owner while extending away from them.
+        if(preserve_world_velocity_on_turn && value(0x38)!=previous_facing) {
+            state.variables[0x9e]=-value(0x9e);facing_right=value(0x38)>0;
+        }
         if (captured_target && value(0x73) != 0 && value(0x74) > 0) {
             capture_damage += static_cast<unsigned>(value(0x74));
             state.variables[0x73] = 0.0f;
@@ -264,6 +291,7 @@ struct FoitEffectPlayback {
             hit=nullptr;hit_resolved=false;
         }
         move = target;
+        if(table && move<table->categories.size())state.move_categories=table->categories[move];
         record = ticks = 0;
         record_duration = 0;
         state.variables[0x36] = defaults.variables[0x36];
@@ -288,6 +316,7 @@ struct FoitEffectPlayback {
     }
 
     void advance_authored(FoitScriptState parent) {
+        if(move<table->categories.size())state.move_categories=table->categories[move];
         // FUN_00499980 tests links before advancing the record clock;
         // FUN_0049a7f0 reevaluates conditional record data every tick.
         if (table==root) {
@@ -295,7 +324,9 @@ struct FoitEffectPlayback {
             state.variables[0xa1]=y;
             state.variables[0x05]=y<=0?1.0f:0.0f;
         }
-        for (const auto& link : table->transitions[move]) {
+        // A newly created or restarted entity enters its first record before
+        // expiry links inspect values initialized by that record.
+        if(!initialize_before_links || record || ticks) for (const auto& link : table->transitions[move]) {
             if (link.target != move && matches(link.condition, parent)) { start(link.target); break; }
         }
         if (table!=root && floor_collision && y <= 0 && value(0x9f) < 0 && (value(0x3b) == 1 || value(0x3b) == 2))
@@ -420,7 +451,7 @@ struct FoitEffectPlayback {
                 (expression.destination.value == 0xa0 || expression.destination.value == 0xa1) &&
                 (expression.left.flags == 9 || expression.left.flags == 0x19);
         });
-        if (!persistent_owner && !owner_active && (value(0x39) == 1 || positioned_by_owner)) {
+        if (!persistent_owner && !independent_owner && !owner_active && (value(0x39) == 1 || positioned_by_owner)) {
             state.variables[0xb0] = 1.0f;
             const auto end = std::find(table->names.begin(), table->names.end(), "End");
             if (end == table->names.end()) {

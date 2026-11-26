@@ -103,6 +103,17 @@ int main()
         state.team_variables[0x42] = 100.0f;
         check(match_foit_condition(team_meter, inputs, true, state) == 0, "Team meter can enable Snapback");
 
+        apply_foit_assignment({3,false,{0x19,0x42},{0,0x42c80000},{0x19,0x42}},state);
+        check(state.team_variables[0x42]==0.0f,"Authored team meter debit is writable");
+        state.move_categories=std::vector<std::uint32_t>{0x13bbb042};
+        FoitExpression category{0x20,true,{1,0x27},{0,0},{0x24,0x13bbb042}};
+        check(test_foit_expressions({category},state),"Move category membership uses authored tags");
+        category.opcode=0x21;
+        check(!test_foit_expressions({category},state),"Negated move category membership rejects a tagged move");
+        state.variables[4]=0.0f;
+        apply_foit_assignment({0x26,false,{1,0x27},{0x24,0x13bbb042},{1,4}},state);
+        check(state.variables[4]==1.0f,"Arithmetic category test produces a boolean value");
+
         FoitExpression integer_op{0x1c, false, {1, 0}, {1, 1}, {1, 2}};
         state.variables[0] = 5.75f;
         state.variables[1] = 3.25f;
@@ -121,6 +132,9 @@ int main()
         apply_foit_assignment(integer_op, state);
         check(state.variables[2] == 0.0f, "The minimum script integer has zero remainder when divided by -1");
 
+        state.variables[0]=25.0f;state.variables[2]=0.0f;
+        apply_foit_assignment({0x1f,false,{1,0},{0,0},{1,2}},state);
+        check(state.variables[2]==5.0f,"Square root normalizes the homing projectile's 3-4-5 direction");
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
