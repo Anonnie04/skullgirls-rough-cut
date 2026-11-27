@@ -75,7 +75,7 @@ int main(int argc,char** argv)
  }
  m->story->route_index=13;m->story->enter();m->story_fight_started=false;m->story_tick();
  check(m->story_boss_checkpoint&&!m->practice_load.valid(),"Original boss has explicit preview checkpoint, no DLC substitution");
- 
+
 #ifdef _WIN32
  snapshot(*m,L"boss-checkpoint.png");
 #endif
