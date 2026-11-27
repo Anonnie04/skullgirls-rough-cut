@@ -65,6 +65,13 @@ foreach ($name in $executables) {
     # The preview looks for data02 beside the executable.
     Copy-Item -LiteralPath (Join-Path $buildRoot "$Configuration/$name") -Destination (Join-Path $runtimeRoot $name) -Force
 }
+# Controller support is optional; preserve its runtime and redistribution notice.
+foreach ($name in @('SDL3.dll','LICENSE-SDL3.txt')) {
+    $controllerFile = Join-Path $buildRoot "$Configuration/$name"
+    if (Test-Path -LiteralPath $controllerFile -PathType Leaf) {
+        Copy-Item -LiteralPath $controllerFile -Destination (Join-Path $runtimeRoot $name) -Force
+    }
+}
 # Write the quick-start guide for the generated runtime.
 @'
 Skullgirls: Rough Cut - local runtime

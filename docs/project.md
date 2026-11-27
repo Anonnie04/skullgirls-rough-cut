@@ -6,9 +6,124 @@ from local game data. Windows preparation copies the archives; Linux preparation
 links the Steam installation.
 
 The preview covers the title screen, main menu, Training Options,
-character and palette selection, stage selection, and a playable Training
+character and palette selection, stage selection, local Versus, and a playable Training
 Room for Filia, Cerebella, Peacock, Parasoul, Ms. Fortune, Painwheel, Robo-Fortune, Valentine, Squigly, Fukua, Double, Big Band, Eliza, Beowulf, Annie, Umbrella, Marie, and Black Dahlia.
 The command-line tools inspect GFS archives and export sprite layers and frames.
+
+## Steam Controller over Bluetooth (2026-11-27)
+
+Windows exposes the user's Valve Steam Controller as Bluetooth LE device
+`28DE:1106` with a vendor HID collection, even without a live XInput port.
+Steam was not running during the successful direct-input capture. SDL 3.4.20's
+maintained Steam Controller HIDAPI driver opened that collection and delivered
+all four face buttons, both bumpers, both analog triggers, Start/Back, the
+thumbstick's full signed X/Y range and all four left-pad directions. The
+32-bit C++ backend also opened the device after Steam had started; gameplay
+coexistence with Steam Input is not established by that connection-only check. The
+controller's Steam profile name `Work` is separate from its native device name
+`Steam Controller`.
+
+The Windows preview now loads optional `SDL3.dll` beside the executable and
+polls gamepads on its existing 60-Hz input clock. SDL owns Bluetooth packet
+assembly, temporary lizard-mode suppression and restoration on close; no custom
+firmware packet assumptions or persistent Steam/controller configuration edits
+are used. SDL's internal input handling is outside rollback snapshots; only
+normalized masks enter combat. Direct hardware input is disabled in netplay.
+
+The first two available devices bind to P1/P2 without shifting a still-connected
+pad when the other disconnects. Their names appear in selection hints. Keyboard
+layouts remain usable independently: with one pad on P1, P2 uses I/J/K/L and
+V/B/N, F/G/H. The physical stick and left-pad directions navigate menus and
+combat. A/Start confirms, B/Back cancels, and Y opens palette selection. Start
+or Back pauses combat; A resumes. At results, A/Start advances or rematches,
+Y selects characters, and B/Back exits.
+
+Combat defaults follow the previously inspected Work layout: X=LP, Y=MP,
+RT=HP, A=LK, B=MK, LT=HK. LB/RB provide three-punch/three-kick macros; rear
+paddles and the right pad are currently unmapped. These defaults are the
+preview's mapping, not an assertion of immutable original-game bindings.
+Analog directions use an 8,000-unit deadzone; triggers use separate 8,192/6,144
+press/release thresholds. Combat edges do not repeat while held; menu directions
+repeat after a delay. Opposite directions cancel. Focus loss releases both
+sources, and a disconnected local-Versus pad pauses the match. Reconnection and
+focus return require neutral input before accepting new commands.
+
+For a new Windows runtime, run `scripts/prepare-controllers.ps1` before CMake
+configuration. Its default x86 package matches this Win32 build; pass
+`-Architecture x64` for a 64-bit executable. It downloads the pinned official
+SDL 3.4.20 release, verifies the published SHA-256, and installs the DLL and its
+license into `runtime`. CMake copies these beside build executables, and
+`prepare-runtime.ps1` preserves them when packaging. Without the optional DLL,
+keyboard play remains available. The SDL license is retained as
+`runtime/LICENSE-SDL3.txt`.
+
+Protocol/backend reference: [SDL Steam Controller driver](https://github.com/libsdl-org/SDL/blob/release-3.4.20/src/joystick/hidapi/SDL_hidapi_steam.c).
+Runtime source: [SDL 3.4.20 release](https://github.com/libsdl-org/SDL/releases/tag/release-3.4.20).
+
+Controller remapping UI, manual side reassignment, rear-pad/gyro/rumble support,
+physical unplug/reconnect trials, and Steam Input coexistence remain unverified
+or unfinished. Linux still uses the existing SDL2 platform backend; this new
+Windows SDL3 device backend has not been ported or tested there.
+
+Validation: Windows Release build and all 31 CTest cases pass (153.73 seconds).
+The controller suite covers all six attacks, bumper macros, trigger hysteresis,
+stick diagonals, opposite-direction cancellation, focus/reconnect neutral gating,
+menu/team selection, independent controller/keyboard combat, a real normal
+attack, pause/resume, disconnect release and netplay isolation. A separate live
+32-bit backend check opened the physical Steam Controller. The executable and
+SDL3 DLL in `runtime` match their build-directory copies. Changes are local,
+not pushed.
+
+## Local Versus match flow (2026-11-27)
+
+The original Main Menu `Local_Versus` action now enters a dedicated local match
+mode through the existing team, palette and stage selection screens. Each side
+chooses one to three fighters. Selection is sequential: Player 1 uses arrows
+and A/S/D, Z/X/C; Player 2 uses I/J/K/L and V/B/N, F/G/H. Enter opens palette
+selection and Escape goes back. In combat those same two independent keyboard
+layouts control the human teams. Native Windows gamepad support is described
+above; Steam Input configuration and manual device assignment remain deferred.
+
+Versus bypasses Training dummy automation, forced guards/counters, regeneration,
+infinite resources, slow motion, input/attack-data overlays and Training reset,
+save/load and recording shortcuts. It starts with the native one-bar team meter
+(`FUN_005a5af0`, slot `0x42`) and uses the current combat engine's health/damage
+rules. Final team KOs use the existing reserve entry and native loss/victory playback. Enter/Escape pauses; its menu provides
+Resume, Command Lists, Character Select and Main Menu. Losing window focus
+releases both sides and pauses the local match.
+
+`FUN_0058a190` initializes the match clock at slot `+0x3b8` to `limit*125`
+and decrements it once before play. The HUD displays positive ticks divided
+by 125, plus one. This mode uses that 99-count clock on the simulation clock,
+holding during
+intro/results, pause, super freeze and a defeated point's reserve transition.
+`FUN_0062e520` supplies the display formula; timer digits use the original
+Glow/Overlay artwork from `InGame.gbs`. The timeout resolver (`FUN_0059c150`)
+sums remaining team health, including living reserves.
+Equal totals produce a draw. Team handicap/health scaling and every native
+clock-stop condition have not been established as exact parity.
+
+The original defaults at `+0x25d0/+0x25d4` are two solo round wins and one team
+round win. Solo-versus-solo retains round scores between fights; team matches
+finish when a whole team is defeated. Results offer the next round or rematch,
+character reselection and exit. Drawn rounds currently replay without awarding
+a win; exhaustive native double-KO/tiebreaker rules remain a parity item.
+Rematches retain teams, palettes and stage while resetting match state.
+
+Steam Input setup, manual device assignment, network transport/lobby support,
+configurable match rules,
+assist selection UI and complete original-game combat parity remain deferred.
+No Steam installation or controller configuration was changed.
+
+Validation: Windows Release build and all 30 CTest cases pass (158.58 seconds).
+The Versus suite covers native menu entry and both players' selection controls,
+independent combat inputs, persistent damage, disabled Training shortcuts,
+pause/focus loss, timer freeze and snapshot restore, KO/draw/timeout outcomes,
+solo score retention, team reserves, rematch and navigation. Asset-backed renders
+check the team screen, native clock digits, match HUD, pause and results.
+The portable executable matches the Release build. Linux shares the mode/input
+code and test registration; a Linux build was not run in this Windows session.
+Changes remain local, not pushed.
 
 ## Black Dahlia playable integration (2026-11-27)
 
@@ -490,11 +605,11 @@ loading/tossing works, but full poison effects on opponents are not claimed.
 The clip's red-haired palette is not forced; normal palette selection remains
 available. No Steam/controller settings or networking behavior were changed.
 
-## Deferred: Steam Controller and local Versus (2026-11-25)
+## Earlier Steam Controller investigation (2026-11-25)
 
-Controller/local Versus implementation is deferred at the user's request.
-No controller backend, device-join screen, or dedicated local Versus mode was
-added during this investigation. Existing two-player Training keyboard controls
+This investigation predates Local Versus and native Windows Bluetooth support
+above. Steam Input configuration remains deferred.
+No controller backend or device-join screen was added during this investigation. Existing two-player Training keyboard controls
 are not a completed local Versus implementation.
 
 The original game's local Versus screen recognized the connected device as
@@ -522,7 +637,8 @@ mapped X/Y to light/medium punch, A/B to light/medium kick, RT to heavy punch,
 and LT to heavy kick, with the left pad/stick supplying directions. This was a
 configured community layout, not proof of immutable original-game defaults.
 
-When resuming:
+The earlier checklist is retained here as history; several items are now
+implemented above.
 
 1. Add controller polling with hot-plug, deadzones, button edges, focus-loss
    release, and distinct device identities; keep it on the simulation clock.
@@ -1735,3 +1851,119 @@ not pitch or volume modifiers. `0x4b77a0` dispatches their five destinations;
 `0x6594e2` assigns a fighter's opposing-team entity pointer, and `0x6b8990`
 continues a supplied hash with the uppercase character name. `0x489c98`
 applies the optional signed byte to script slot `0x98` before playback.
+
+
+## Filia story preview (2026-11-27)
+
+Single Player > Story Mode opens character selection for this temporary narrative
+preview. Space or Z advances dialogue; Enter skips the current cutscene. Enter,
+Space or Z advances credits; cutscene animation
+waits play at the authored 60 Hz rate. In combat, Enter skips to the next native
+route node; Escape returns to the menu. Normal combat controls remain available.
+No original save data, unlock flags or completion achievements are written.
+
+The reader follows installed `core/arcade/story/Filia.stm`: nine scene nodes,
+six encounter nodes and credits. English dialogue (all 56 lines) comes from the
+installed localization, portraits and cinematic shots from `story_art.gfs`, and
+camera/layer transforms and dialogue cues from `ui/Win/CutsceneCommon.gbs`.
+Legacy opening/ending, the Painwheel flashback and both catacomb sequences are
+included. Credits retain all 45 installed `credits_2021.ini` pages and their
+static illustrations; they advance manually rather than using the native
+animated credits presentation. Dialogue uses a readable preview panel rather
+than a complete recreation of the original frame/font animations.
+
+The first five encounters load existing combat actors on their specified stages,
+including Double/Valentine's team. `src/story_enemy_ai.hpp` is the temporary AI
+script: its per-tick entry point always returns neutral held/pressed inputs,
+ignoring player-two keyboard, controller and Training dummy settings. Training
+cheats/recordings are disabled during story combat. Winning or Enter continues
+the story. The original BossMarie encounter is a clearly labeled preview
+checkpoint: Enter continues to the ending. It does not substitute playable DLC
+Marie for the original boss. Native boss combat and original story music,
+voice-over and sound-event routing remain future work; cutscenes are silent.
+Steam integration remains outside this story pass.
+
+Combat banks from earlier opponents are released between encounters to keep the
+whole route within the Win32 address space. Art is decoded once per scene and
+released at the next route node; no game
+assets are committed. `story-test` traverses the entire native route, compares
+reached dialogue keys with every Text command, validates referenced DDS assets,
+and checks malformed scene rejection. `story-moves-test` exercises menu entry,
+full narrative rendering, actual idle-AI combat, encounter skipping, the boss
+checkpoint, and exit cleanup. It emits screenshots under
+`build/story-check/preview` relative to the test working directory.
+
+
+### Story character selection and scene skip (2026-11-27)
+
+Story Mode now opens the existing native-art character grid with one player and
+one character, before route playback. In the initial selection pass Filia was the only implemented
+story; the all-roster expansion below supersedes that restriction.
+Random chooses from the implemented stories. Confirm uses A/Z/Enter; Escape
+returns to the menu. No opponent selection or stage selection is shown for story.
+
+During a scene, Space/Z/A advances a dialogue line; Enter/Start skips the entire
+current scene, even during an animation or dialogue loop. A skip advances exactly
+one native route node, retaining consecutive scenes and reaching credits when
+skipping the ending. Escape still exits the temporary preview. Held confirmation
+cannot immediately skip the opening. Combat Enter still skips the encounter.
+
+Original-code references inspected in `output/SkullGirls.cpp`: `FUN_005ab1f0`
+(character-select setup), `FUN_00595390` (story helper initialization),
+`FUN_0060f6a0` (cutscene cleanup and return to story state), and `FUN_006118b0`
+(native story-node progression). The preview reuses its character-select renderer
+and the native route handoff, rather than simulating repeated next-line presses.
+The keyboard bindings above belong to the preview; exact original input mapping
+has not been reconstructed in this pass.
+
+
+### All 18 story routes (2026-11-27)
+
+The story preview now covers the complete selectable roster. The character grid
+opens the chosen character's installed `.stm` route; Random chooses among all 18.
+`StoryPlayback` replaces the Filia-only reader (the `FiliaStory` alias remains for
+its regression fixtures). All original NewScene, Fight and Credits nodes remain
+in order, including scenes after the credits. The asset-backed traversal covers
+3,707 dialogue pages and 205 scenes across the 18 routes.
+
+The interpreter supports five independently addressed `_PERSIST` animation slots,
+`_PERSIST _END` replacement/cleanup, native loop start/end ranges, one-shot holds,
+creation-order transform writes, animated pivot coordinates (including Dahlia’s
+negative pivot offsets), textured-sprite color tints, per-animation speeds, raw
+dialogue, literal
+punctuation and whitespace-normalized localization keys. Hungern's `{hn01}` to
+`{hn13}` dialogue uses the original glyph rectangles and both Dialogue Text font
+atlases rather than displaying tags or inventing words. Explicit empty regular
+and XL portraits, blank shot assignments and Character_Right cleanup are handled.
+
+Art is cached only for currently assigned shots and portraits and discarded when
+those assignments change. Story sources up to 8,192 pixels are accepted (the
+installed Annie panoramas reach 4,800), while decoded textures stay within 2,048
+pixels per side. Other texture loaders retain their existing source limit. Case-insensitive lookup follows shipped script spelling
+variants. Two shipped references have no corresponding texture: Dahlia's disabled
+Shot_02 placeholder `BlackDahlia_03a`, and MarieFight3_Intro's
+`shadow/peacock_neutral`. Those remain blank; no replacement art is invented.
+Other missing assets still fail validation. UmbrellaFight6_Outro contains an
+animation name in an AnimSpeed command; that invalid speed is ignored.
+
+Regular encounters use the selected protagonist and the script's explicit player
+teams and palette numbers. Unsupported boss actors, unavailable stages, and
+encounters requiring scripted health/meter/difficulty overrides remain labeled
+preview checkpoints. Enter continues their native route; playable DLC Marie is
+never substituted for BossMarie. AI remains neutral. Native story music, voices,
+SFX and full custom encounter rules remain future work, as in the Filia preview.
+
+Controls are unchanged: Space/Z/A advances a line, Enter/Start skips one scene,
+Enter skips an encounter, and Escape exits. Credits pages advance manually.
+No original saves, unlock flags, achievements or Steam services are changed.
+
+`story-roster-test` traverses all 18 routes and validates dialogue coverage,
+referenced art and completion. `story_roster-moves-test` selects and runs all
+18 stories using a single Menu instance, decodes every encountered scene's art,
+renders representative opening/post-credit/multi-layer/Hungern fixtures, checks
+cache release, and verifies protagonist and special-encounter handoffs. Screenshots
+are written under `build/story-all/preview` relative to the test working directory.
+
+The `story-preview-check` build target compiles the app and all four story checks
+as one dependency graph, allowing their shared menu translation units to build
+concurrently. Run story checks with `ctest -C Release -R "^story"`.

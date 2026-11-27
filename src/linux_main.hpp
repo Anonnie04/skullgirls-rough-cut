@@ -188,7 +188,7 @@ int main(int argc,char** argv) {
             if(now-deadline>4*period) deadline=now;
             deadline+=period;
             if(menu->practice_load.valid() && menu->practice_load.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
-                try { menu->finish_practice(window.get()); SetWindowTextW(window.get(),L"Skullgirls - Training Room"); }
+                try { menu->finish_practice(window.get()); SetWindowTextW(window.get(),menu->local_versus?L"Skullgirls - Local Versus":L"Skullgirls - Training Room"); }
                 catch(const std::exception& error) { menu->training=Menu::TrainingView::stage_select; MessageBoxA(window.get(),error.what(),"Training Room",0); }
                 deadline=Clock::now()+period;
             }
@@ -196,6 +196,7 @@ int main(int argc,char** argv) {
                 menu->audio->pause_combat(menu->practice_paused);
                 menu->audio->tick();
             }
+            menu->story_tick();
             const bool practicing=menu->training==Menu::TrainingView::practice && !menu->practice_paused;
             if(practicing && cadence.update_due(menu->practice_speed())) menu->practice_tick();
             if(!practicing) { cadence={}; skipped=0; }

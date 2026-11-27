@@ -12,6 +12,8 @@
 #include "linux_platform.hpp"
 #endif
 
+#include "controller_input.hpp"
+#include "controller_windows.hpp"
 #include "sprite_asset.hpp"
 #include "audio.hpp"
 #include "audio_playback.hpp"
@@ -50,6 +52,8 @@
 #include "netplay_session.hpp"
 #include "hud_portrait.hpp"
 #include "combat_scene.hpp"
+#include "story_scene.hpp"
+#include "story_enemy_ai.hpp"
 #include "stage_select.hpp"
 #include "stage_scene.hpp"
 #include "sprite_gpu.hpp"
@@ -100,21 +104,21 @@ struct Texture {
         return value;
     }
 
-    static DdsLayout dds_layout(const skullgirls::SpriteBytes& dds) {
+    static DdsLayout dds_layout(const skullgirls::SpriteBytes& dds,unsigned source_limit=4096) {
         if (dds.size() < 128 || word(dds, 0, 4) != 0x20534444 ||
             (word(dds, 84, 4) != 0x35545844 && word(dds, 84, 4) != 0x31545844))
             throw std::runtime_error("Expected a DXT1 or DXT5 texture");
         const unsigned block_size = word(dds, 84, 4) == 0x35545844 ? 16 : 8;
         const auto w = word(dds, 16, 4), h = word(dds, 12, 4);
-        if (!w || !h || w > 4096 || h > 4096 ||
+        if (!w || !h || w > source_limit || h > source_limit ||
             ((w + 3) / 4) * ((h + 3) / 4) > (dds.size() - 128) / block_size)
             throw std::runtime_error("Truncated texture");
         return {w, h, block_size};
     }
 
     void load(const skullgirls::SpriteBytes& dds, Encoding encoding = Encoding::rgba,
-              unsigned max_extent = 4096) {
-        const auto [w, h, block_size] = dds_layout(dds);
+              unsigned max_extent = 4096,unsigned source_limit=4096) {
+        const auto [w, h, block_size] = dds_layout(dds,source_limit);
         unsigned sample = 1;
         while ((std::max(w, h) + sample - 1) / sample > max_extent) sample *= 2;
         width = (w + sample - 1) / sample;
@@ -1087,6 +1091,19 @@ struct Menu {
     // The current screen determines where paint and keyboard messages go.
     enum class TrainingView { none, options, team_size, fighters, stage_select, stage_confirmed, practice };
     TrainingView training = TrainingView::none;
+    bool local_versus=false;
+    struct VersusMatch {
+        // Original match slot +0x3b8 starts at limit*125, then decrements
+        // once before play. HUD displays positive ticks/125 + 1.
+        static constexpr unsigned ticks_per_unit=125;
+        static constexpr unsigned initial_ticks=99*ticks_per_unit-1;
+        unsigned remaining_ticks=initial_ticks;
+        unsigned displayed_time()const{return remaining_ticks?remaining_ticks/ticks_per_unit+1:0;}
+        bool timeout=false,round_awarded=false,match_over=false;
+        std::array<unsigned,2> wins{};
+    };
+    VersusMatch versus_match;
+    static constexpr std::array versus_pause_options{L"Resume Game",L"Command Lists",L"Character Select",L"Main Menu"};
     std::array<int, 2> team_size{1, 2};
     std::array<std::vector<int>, 2> fighters;
     int player = 0;
@@ -4626,6 +4643,13 @@ struct Menu {
     }
 
     std::size_t training_value(std::string_view keyword, std::size_t fallback = 0) const {
+        if(local_versus||story){
+            if(keyword=="OPT_STR_DEATHALLOWED"||keyword=="OPT_STR_LIFEBAR_SETTING")return 1;
+            if(keyword=="OPT_STR_LIFEBAR_LEVEL")return 100;
+            // FUN_005a5af0 initializes each team owner's meter slot to 100.
+            if(keyword=="OPT_STR_METERLEVEL")return 1;
+            return 0;
+        }
         // Network matches use synchronized human inputs, not Training cheats.
         if(network_mode) {
             if(keyword=="OPT_STR_DEATHALLOWED")return 1;
@@ -4893,6 +4917,7 @@ struct Menu {
 #endif
             );
         practice_stage_tick = 0;
+        if(local_versus)versus_match={};
         practice_paused = false;
         practice_snapshot.reset();
         practice_keys_held = {};
@@ -4904,6 +4929,9 @@ struct Menu {
 
     // FUN_0051e6a0 copies the Windows keyboard state to the current snapshot
     // and preserves the previous snapshot. Combat commands read the snapshots.
+    std::array<unsigned,2> controller_held{};
+    std::array<skullgirls::ControllerMapper,2> controller_mappers{};
+    std::array<std::string,2> controller_names{};
     std::array<unsigned, 2> practice_keys_held{};
     std::array<unsigned, 2> practice_keys_previous{};
     std::array<unsigned, 2> practice_attack_edges{};
@@ -4947,6 +4975,7 @@ struct Menu {
         std::vector<skullgirls::FoitEffectPlayback> effects;
         float flash_amount;
         skullgirls::CombatPresentation combat;
+        VersusMatch versus;
     };
     std::optional<PracticeSnapshot> practice_snapshot;
     struct DummyRecording {
@@ -4977,7 +5006,7 @@ struct Menu {
         return {practice_players,practice_teams,hud_stats,hud_inputs,previous_push_boxes,
             practice_camera_center,practice_camera_bottom,practice_camera_zoom,practice_stage_tick,
             recent_dummy_contact,training_rng_state,training_random,practice_presentation,
-            practice_intro_cycle,practice_win_cycle,practice_effects,super_flash_amount,combat_presentation};
+            practice_intro_cycle,practice_win_cycle,practice_effects,super_flash_amount,combat_presentation,versus_match};
     }
     void load_practice_state(const PracticeSnapshot& saved) {
         practice_players = saved.fighters;
@@ -4998,6 +5027,7 @@ struct Menu {
         practice_effects = saved.effects;
         super_flash_amount = saved.flash_amount;
         combat_presentation = saved.combat;
+        versus_match=saved.versus;
     }
     void save_or_restore_practice(bool restore) {
         if(!restore || !practice_snapshot) {
@@ -5022,7 +5052,7 @@ struct Menu {
     // Steam Input for the Valve controller named Work is deferred separately;
     // native XInput controllers do not intrinsically require Steam networking.
     void begin_netplay_match(std::uint32_t shared_seed) {
-        network_mode=true;rollback_replaying=false;practice_paused=false;
+        local_versus=false;network_mode=true;rollback_replaying=false;practice_paused=false;
         dummy_recording.reset();dummy_playing.reset();dummy_armed=false;
         practice_keys_held={};practice_keys_previous={};practice_attack_edges={};
         next_effect_id=1;practice_stage_tick=0;practice_intro_cycle=practice_win_cycle=0;
@@ -5889,6 +5919,65 @@ struct Menu {
         }
     }
 
+    template<class Emit>
+    void controller_frame(const std::array<skullgirls::ControllerSample,2>& samples,bool focused,Emit emit){
+        if(practice_load.valid()||network_mode){controller_held={};for(auto& m:controller_mappers)m.inhibit();return;}
+        for(unsigned side=0;side<2;++side){
+            const auto& sample=samples[side];auto frame=controller_mappers[side].update(sample,focused);
+            controller_names[side]=sample.connected?sample.name:std::string{};
+            if(frame.disconnected&&local_versus&&training==TrainingView::practice){release_practice_inputs();}
+            const bool playing=training==TrainingView::practice&&!practice_paused&&practice_presentation.phase!=PracticePresentation::Phase::results;
+            controller_held[side]=playing?frame.held:0;
+            if(!focused)continue;
+            const auto edge=[&](unsigned b){return (frame.buttons_pressed&(1u<<b))!=0;};
+            if(playing){
+                practice_attack_edges[side]|=frame.pressed&~15u;
+                if(edge(6)||edge(4)){emit(VK_RETURN);controller_held={};}
+                continue;
+            }
+            if(training==TrainingView::practice){
+                if(practice_presentation.phase==PracticePresentation::Phase::results){
+                    if(edge(6)||edge(0))emit(VK_RETURN);
+                    else if(edge(3))emit('S');else if(edge(1)||edge(4))emit(VK_ESCAPE);
+                    continue;
+                }
+            }else if(local_versus&&training!=TrainingView::none){if(side!=unsigned(player))continue;}
+            else if(side!=0)continue;
+            const auto key=[&](WPARAM value){
+                if(local_versus&&training!=TrainingView::practice&&training!=TrainingView::none&&player==1){
+                    if(value==VK_LEFT)value='J';else if(value==VK_RIGHT)value='L';else if(value==VK_DOWN)value='K';else if(value==VK_UP)value='I';else if(value=='Z')value='F';
+                }
+                emit(value);
+            };
+            // UI direction repeats are independent from combat button edges.
+            if(frame.pressed&1)key(VK_LEFT);if(frame.pressed&2)key(VK_RIGHT);
+            if(frame.pressed&4)key(VK_DOWN);if(frame.pressed&8)key(VK_UP);
+            if(edge(1)||edge(4))key(VK_ESCAPE);
+            else if(edge(3)&&training==TrainingView::fighters)key(VK_RETURN);
+            else if(edge(6))key(story||training==TrainingView::practice?VK_RETURN:'Z');
+            else if(edge(0))key('Z');
+        }
+    }
+    void release_practice_inputs(){
+        controller_held={};for(auto& m:controller_mappers)m.inhibit();
+        if(local_versus&&training==Menu::TrainingView::practice){practice_paused=true;pause_cursor=0;pause_page.reset();}
+        practice_keys_held = {};
+        practice_keys_previous = {};
+        practice_attack_edges = {};
+        for (auto& player : practice_players) {
+            player.practice_left = player.practice_right = false;
+            player.practice_down = player.practice_up = false;
+            player.normal_input = -1;
+            player.queued_followup = -1;
+            player.normal_inputs = {};
+            player.buffered_special.reset();
+            player.throw_input = false;
+            player.pressed_punches = player.pressed_kicks = 0;
+            player.held_attack_buttons = 0;
+            player.dash_input_history.fill(skullgirls::filia_neutral);
+        }
+    }
+
     void practice_key(WPARAM key, bool pressed) {
         // Left, right, down, up, LP, MP, HP, LK, MK, HK.
         constexpr std::array<std::array<WPARAM, 10>, 2> keys{{
@@ -5914,9 +6003,10 @@ struct Menu {
 
     void sample_practice_keys() {
         const std::array inputs{
-            PracticeInput{practice_keys_held[0], std::exchange(practice_attack_edges[0], 0u)},
-            network_mode ? PracticeInput{practice_keys_held[1],std::exchange(practice_attack_edges[1],0u)} :
-                training_dummy_input({practice_keys_held[1], std::exchange(practice_attack_edges[1], 0u)}),
+            PracticeInput{practice_keys_held[0]|(network_mode?0:controller_held[0]), std::exchange(practice_attack_edges[0], 0u)},
+            story ? PracticeInput{skullgirls::story_enemy_ai().held,skullgirls::story_enemy_ai().pressed} :
+            (network_mode||local_versus) ? PracticeInput{practice_keys_held[1]|(network_mode?0:controller_held[1]),std::exchange(practice_attack_edges[1],0u)} :
+                training_dummy_input({practice_keys_held[1]|controller_held[1], std::exchange(practice_attack_edges[1], 0u)}),
         };
         constexpr unsigned throw_buttons = (1u << 4) | (1u << 7);
         for (std::size_t side = 0; side < practice_players.size(); ++side) {
@@ -5953,6 +6043,7 @@ struct Menu {
     }
 
     void reset_practice() {
+        if(local_versus){versus_match.remaining_ticks=VersusMatch::initial_ticks;versus_match.timeout=false;versus_match.round_awarded=false;}
         if (audio) audio->stop_combat();
         practice_effects.clear();
         super_flash_amount = 0;
@@ -6024,6 +6115,7 @@ struct Menu {
         // TODO(STEAM): submit device inputs through GGPO; pause/reset must be
         // synchronized commands rather than local Training shortcuts.
         if(network_mode)return false;
+        if(local_versus)return versus_input(key,repeated);
         if (!repeated) practice_key(key, true);
         if (!practice_paused) {
             if (repeated) return false;
@@ -6771,11 +6863,11 @@ struct Menu {
         practice_keys_previous = practice_keys_held;
     }
 
-    bool begin_practice_knockout() {
+    bool begin_practice_knockout(bool timeout=false) {
         using Phase = PracticePresentation::Phase;
         using Reaction = skullgirls::HeavyReaction;
         auto& scene = practice_presentation;
-        for (std::size_t side = 0; side < hud_stats.size(); ++side)
+        if(!timeout)for (std::size_t side = 0; side < hud_stats.size(); ++side)
             scene.defeated[side] = !hud_stats[side].life && !next_practice_reserve(side);
         if (!scene.defeated[0] && !scene.defeated[1]) return false;
 
@@ -6800,7 +6892,7 @@ struct Menu {
             fighter.pressed_punches = fighter.pressed_kicks = fighter.held_attack_buttons = 0;
             fighter.practice_left = fighter.practice_right = fighter.practice_down = fighter.practice_up = false;
             fighter.buffered_special.reset();
-            if (!scene.defeated[side]) continue;
+            if (!scene.defeated[side]||timeout) continue;
             if (fighter.hurt_group < 0 || fighter.heavy_reaction == Reaction::none ||
                 fighter.heavy_reaction == Reaction::air_launch || fighter.fenrir_captured ||
                 fighter.throw_phase != PracticeFighter::ThrowPhase::none) {
@@ -6855,6 +6947,12 @@ struct Menu {
 
             scene.phase = Phase::results;
             scene.tick = 0;
+            if(local_versus&&!versus_match.round_awarded){
+                versus_match.round_awarded=true;
+                if(scene.defeated[0]!=scene.defeated[1])++versus_match.wins[scene.defeated[0]?1:0];
+                const unsigned required=fighters[0].size()==1&&fighters[1].size()==1?2:1;
+                versus_match.match_over=versus_match.wins[0]>=required||versus_match.wins[1]>=required;
+            }
             const auto choice = training_value("PRACTICE_FILIA_WIN");
             const unsigned cycle = practice_win_cycle++;
             for (std::size_t side = 0; side < practice_players.size(); ++side) {
@@ -9493,6 +9591,21 @@ struct Menu {
             advance_practice_effects(false);
             return;
         }
+        if(local_versus&&!super_frozen&&hud_stats[0].life&&hud_stats[1].life&&versus_match.remaining_ticks){
+            if(--versus_match.remaining_ticks==0){
+                versus_match.timeout=true;
+                const auto health=[&](unsigned side){
+                    std::uint64_t total=0;const auto& team=practice_teams[side];
+                    for(unsigned slot=0;slot<fighters[side].size();++slot)
+                        total+=slot==team.active_slot?hud_stats[side].life:team.health[slot].life;
+                    return total;
+                };
+                const auto p1=health(0),p2=health(1);
+                practice_presentation.defeated={p1<=p2,p2<=p1};
+                begin_practice_knockout(true);
+                return;
+            }
+        }
         if (training_value("OPT_STR_DEATHALLOWED")) {
             for (std::size_t side = 0; side < practice_teams.size(); ++side) {
                 if (hud_stats[side].life) continue;
@@ -10392,6 +10505,18 @@ struct Menu {
         return result;
     }
 
+    void paint_versus_timer(Gdiplus::Graphics& dc)const{
+        const auto time=std::min(99u,versus_match.displayed_time());
+        std::array<unsigned,4> ids{};bool native=true;
+        for(unsigned digit=0;digit<2;++digit)for(unsigned layer=0;layer<2;++layer){
+            const auto suffix=std::string("Textures/HUD/Timer_Number_")+(layer?"Overlay_":"Glow_")+std::to_string(digit?time%10:time/10)+".png";
+            const auto found=std::find_if(combat_scene.texture_names.begin(),combat_scene.texture_names.end(),[&](const auto& t){return t.first.size()>=suffix.size()&&t.first.compare(t.first.size()-suffix.size(),suffix.size(),suffix)==0;});
+            if(found==combat_scene.texture_names.end()||!combat_scene.tiles.count(found->second))native=false;
+            else ids[digit*2+layer]=found->second;
+        }
+        if(native){for(unsigned i=0;i<4;++i)draw_combat_tile(dc,ids[i],{i<2?597.0f:625.0f,33,56,71});}
+        else{const auto text=(time<10?L"0":L"")+std::to_wstring(time);draw_text(dc,text.c_str(),{581,30,115,80},54,Gdiplus::StringAlignmentCenter);}
+    }
     void paint_practice_hud(Gdiplus::Graphics& dc) const {
         if (!hud_atlas[0].bitmap) return;
         constexpr int width = 1280, height = 286;
@@ -10622,7 +10747,7 @@ struct Menu {
             draw_stat(hits.c_str(), 258);
         }
         tile(0, 88, 1096, 394, 1366, {538, -18, 204, 180});
-        for (const float x : {597.0f, 625.0f}) {
+        if(!local_versus)for (const float x : {597.0f, 625.0f}) {
             tile(0, 1859, 251, 1943, 357, {x, 33, 56, 71});
             tile(0, 1947, 251, 2031, 357, {x, 33, 56, 71});
         }
@@ -11158,6 +11283,13 @@ struct Menu {
         finish_sprite_layer(dc);
 #endif
         paint_practice_hud(dc);
+        if(local_versus){
+            paint_versus_timer(dc);
+            if(fighters[0].size()==1&&fighters[1].size()==1){
+                const auto score=std::to_wstring(versus_match.wins[0])+L" - "+std::to_wstring(versus_match.wins[1]);
+                draw_text(dc,score.c_str(),{575,138,130,30},20,Gdiplus::StringAlignmentCenter);
+            }
+        }
         paint_combo_counters(dc);
         for (std::size_t side = 0; side < hud_stats.size(); ++side) {
             const auto& stats = hud_stats[side];
@@ -11176,13 +11308,13 @@ struct Menu {
         }
         using Phase = PracticePresentation::Phase;
         if (practice_presentation.phase == Phase::knockout) {
-            draw_text(dc, L"K.O.", {320, 304, 640, 75}, 42, Gdiplus::StringAlignmentCenter);
+            draw_text(dc, local_versus&&versus_match.timeout?L"TIME OUT":L"K.O.", {320, 304, 640, 75}, 42, Gdiplus::StringAlignmentCenter);
         } else if (practice_presentation.phase == Phase::results) {
             const auto& defeated = practice_presentation.defeated;
             const wchar_t* result = defeated[0] && defeated[1] ? L"Draw" :
                 defeated[0] ? L"Player 2 wins" : L"Player 1 wins";
             draw_text(dc, result, {320, 159, 640, 60}, 42, Gdiplus::StringAlignmentCenter);
-            draw_text(dc, L"R to reset", {320, 219, 640, 35}, 22, Gdiplus::StringAlignmentCenter);
+            draw_text(dc, local_versus?(versus_match.match_over?L"Enter: Rematch    S: Character Select    Esc: Main Menu":L"Enter: Next Round    S: Character Select    Esc: Main Menu"):L"R to reset", {320, 219, 640, 35}, 22, Gdiplus::StringAlignmentCenter);
         }
         if (practice_paused) paint_practice_pause(dc);
     }
@@ -11346,7 +11478,7 @@ struct Menu {
         dc.FillRectangle(&dim, 0, 0, 1280, 720);
         training_frame.draw(dc, 352, 184, 576, 404);
         player_header.draw(dc, 549, 171, 182, 30);
-        draw_text(dc, L"★ PLAYER 1 ★", {549, 174, 182, 27}, 20, Gdiplus::StringAlignmentCenter);
+        draw_text(dc, local_versus?L"PAUSED":L"★ PLAYER 1 ★", {549, 174, 182, 27}, 20, Gdiplus::StringAlignmentCenter);
         color_wing.draw(dc, 466, 200, 45, 38);
         const auto wing_state = dc.Save();
         dc.TranslateTransform(1284, 0);
@@ -11357,7 +11489,7 @@ struct Menu {
             paint_command_list(dc);
             return;
         }
-        const auto* heading = pause_page ? pause_options[static_cast<std::size_t>(*pause_page)] : L"PLAYER 1 PAUSE";
+        const auto* heading = pause_page ? pause_options[static_cast<std::size_t>(*pause_page)] : local_versus?L"LOCAL VERSUS":L"PLAYER 1 PAUSE";
         draw_text(dc, heading, {512, 213, 256, 42}, 30, Gdiplus::StringAlignmentCenter);
         if (!pause_page || *pause_page == PauseOption::options) {
             const auto draw_rows = [&](const auto& rows, std::size_t selected) {
@@ -11369,7 +11501,8 @@ struct Menu {
                 }
             };
             if (!pause_page) {
-                draw_rows(pause_options, pause_cursor);
+                if(local_versus)draw_rows(versus_pause_options,pause_cursor);
+                else draw_rows(pause_options, pause_cursor);
                 return;
             }
             constexpr std::size_t visible = 7;
@@ -11785,6 +11918,53 @@ struct Menu {
         dc.Restore(state);
     }
 
+    void begin_local_versus(){
+        local_versus=true;network_mode=false;versus_match={};
+        dummy_recording.reset();dummy_playing.reset();dummy_armed=false;
+        practice_keys_held={};practice_keys_previous={};practice_attack_edges={};
+        start_character_select();
+    }
+    void leave_local_versus(bool select){
+        practice_paused=false;pause_page.reset();practice_snapshot.reset();
+        practice_keys_held={};practice_keys_previous={};practice_attack_edges={};
+        practice_effects.clear();practice_presentation={};
+        practice_background.reset();practice_scene.reset();
+        if(select){start_character_select();return;}
+        local_versus=false;training=TrainingView::none;
+        if(audio){audio->stop_combat();audio->music("menu_intro","menu_loop");}
+    }
+    bool versus_input(WPARAM key,bool repeated){
+        if(repeated)return false;
+        const bool accept=key==VK_RETURN||key=='A'||key=='Z';
+        if(practice_presentation.phase==PracticePresentation::Phase::results){
+            if(practice_presentation.tick<30)return false;
+            if(key==VK_RETURN||key=='R'){
+                practice_keys_held={};practice_keys_previous={};practice_attack_edges={};
+                practice_paused=false;pause_page.reset();next_effect_id=1;
+                if(versus_match.match_over)versus_match={};
+                reset_practice();start_practice_intro();return true;
+            }
+            if(key=='S'){leave_local_versus(true);return true;}
+            if(key==VK_ESCAPE){leave_local_versus(false);return true;}
+            return false;
+        }
+        if(!practice_paused){
+            if(key==VK_RETURN||key==VK_ESCAPE){
+                practice_paused=true;pause_cursor=0;pause_page.reset();
+                practice_keys_held={};practice_keys_previous={};practice_attack_edges={};return true;
+            }
+            practice_key(key,true);return false;
+        }
+        if(pause_page==PauseOption::commands){
+            return command_input(key,accept,key==VK_ESCAPE||key=='X'||key=='S');
+        }
+        if(key==VK_ESCAPE){practice_paused=false;return true;}
+        if(key==VK_UP||key==VK_DOWN){pause_cursor=(pause_cursor+(key==VK_UP?versus_pause_options.size()-1:1))%versus_pause_options.size();return true;}
+        if(!accept)return false;
+        if(pause_cursor==0){practice_paused=false;return true;}
+        if(pause_cursor==1){pause_page=PauseOption::commands;command_page=CommandPage::menu;command_menu_cursor=command_character_cursor=command_move_cursor=0;return true;}
+        leave_local_versus(pause_cursor==2);return true;
+    }
     void start_character_select() {
         if (audio) { audio->stop_combat(); audio->music("select_intro", "select_loop"); }
         for (auto& team : fighters) team.clear();
@@ -11797,6 +11977,16 @@ struct Menu {
 
     // Apply navigation to the current setup screen and start loading after stage confirmation.
     void training_input(WPARAM key, bool accept, bool cancel) {
+        if(local_versus&&player==1){
+            switch(key){
+            case 'J':key=VK_LEFT;break;case 'L':key=VK_RIGHT;break;case 'K':key=VK_DOWN;break;case 'I':key=VK_UP;break;
+            case 'V':key='A';break;case 'B':key='S';break;case 'N':key='D';break;
+            case 'F':key='Z';break;case 'G':key='X';break;case 'H':key='C';break;
+            case VK_RETURN:case VK_ESCAPE:break;
+            default:return;
+            }
+            accept=key=='A'||key=='Z';cancel=key==VK_ESCAPE||key=='X'||key=='S';
+        }
         if (audio && training != TrainingView::practice) {
             if (cancel) audio->ui("ui.nope.wav");
             else if (accept) audio->ui(training == TrainingView::stage_select ? "stageselect.whoosh.wav" : "submenu.select.wav");
@@ -11831,7 +12021,8 @@ struct Menu {
                     nameplate(0, fighters[0].size(), fighter_cursor, true);
                     training = TrainingView::fighters;
                 } else {
-                    training = TrainingView::options;
+                    if(local_versus){local_versus=false;training=TrainingView::none;}
+                    else training = TrainingView::options;
                 }
             } else if (accept) {
                 fighter_cursor = 9;
@@ -12024,6 +12215,275 @@ struct Menu {
         submenu_from = submenu_position(now);
         submenu_started = now;
         submenu = open;
+    }
+    bool story_select=false;
+    bool story_selection_unavailable=false;
+    std::unique_ptr<skullgirls::StoryPlayback> story;
+    std::array<std::unique_ptr<Texture>,2> story_symbol_atlases;
+    std::map<std::string,std::unique_ptr<Texture>> story_art;
+    std::size_t story_loaded_node=std::size_t(-1);
+    unsigned story_loaded_revision=unsigned(-1);
+    bool story_fight_started=false, story_boss_checkpoint=false;
+    std::string story_error;
+    static std::wstring story_wide(const std::string& text) {
+        const int n=MultiByteToWideChar(CP_UTF8,0,text.data(),int(text.size()),nullptr,0);
+        std::wstring result(n,L' ');
+        if(n)MultiByteToWideChar(CP_UTF8,0,text.data(),int(text.size()),result.data(),n);
+        return result;
+    }
+    // Story visits multiple opponents in one process. Drop the previous
+    // encounter's decoded banks before loading another, especially on Win32.
+    void story_release_combat_assets() {
+        if(practice_load.valid())throw std::runtime_error("Story encounter is still loading");
+        practice_effects.clear();practice_presentation={};practice_snapshot.reset();
+        practice_players={};practice_teams={};practice_scene.reset();practice_background.reset();
+        practice_palette_cache.clear();practice_palette_lookups.clear();practice_variant_bytes=0;
+        staged_fighters={};staged_colors={};effect_textures.clear();
+        const auto release=[](auto& assets,auto& frames,auto& overlays){assets={};frames.clear();frames.shrink_to_fit();overlays.clear();};
+        release(cerebella_assets,cerebella_frames,cerebella_overlays);
+        release(peacock_assets,peacock_frames,peacock_overlays);
+        release(parasoul_assets,parasoul_frames,parasoul_overlays);
+        release(painwheel_assets,painwheel_frames,painwheel_overlays);
+        release(squigly_assets,squigly_frames,squigly_overlays);
+        release(fukua_assets,fukua_frames,fukua_overlays);
+        release(double_assets,double_frames,double_overlays);
+        release(bigband_assets,bigband_frames,bigband_overlays);
+        release(eliza_assets,eliza_frames,eliza_overlays);
+        release(beowulf_assets,beowulf_frames,beowulf_overlays);
+        release(annie_assets,annie_frames,annie_overlays);
+        release(umbrella_assets,umbrella_frames,umbrella_overlays);
+        release(marie_assets,marie_frames,marie_overlays);
+        release(blackdahlia_assets,blackdahlia_frames,blackdahlia_overlays);
+        release(valentine_assets,valentine_frames,valentine_overlays);
+        release(robofortune_assets,robofortune_frames,robofortune_overlays);
+        release(msfortune_assets,msfortune_frames,msfortune_overlays);
+        msfortune_headless_frames.clear();msfortune_headless_frames.shrink_to_fit();msfortune_headless_overlays.clear();
+    }
+    void begin_story_select() {
+        local_versus=network_mode=false;story_select=true;story_selection_unavailable=false;
+        start_character_select();team_size={1,1};player=0;training=TrainingView::fighters;
+        fighter_cursor=int(std::find(roster.begin(),roster.end(),std::string_view("filia"))-roster.begin());
+        palette_cursor=0;nameplate(0,0,fighter_cursor,false);idle_start=Clock::now();
+    }
+    void begin_story(const std::string& character="filia") {
+        story_select=false;story_selection_unavailable=false;
+        auto next=std::make_unique<skullgirls::StoryPlayback>();
+        auto core=std::make_shared<skullgirls::SpriteArchive>(game_data/"core.gfs");
+        skullgirls::SpriteArchive ui(game_data/"ui.gfs"), win(game_data/"ui-win.gfs");
+        next->load([core](const auto& path){return core->read(path);},[&](const auto& path){return ui.read(path);},win.read("ui/Win/CutsceneCommon.gbs"),character);
+        for(unsigned page=0;page<2;++page)if(!story_symbol_atlases[page]){auto t=std::make_unique<Texture>();t->load(win.read("ui/Win/Fonts/Dialogue Text_"+std::to_string(page)+".dds"));story_symbol_atlases[page]=std::move(t);}
+        local_versus=network_mode=false;training=TrainingView::none;
+        practice_paused=false;dummy_recording.reset();dummy_playing.reset();dummy_armed=false;
+        practice_keys_held={};practice_keys_previous={};practice_attack_edges={};
+        story_release_combat_assets();
+        story=std::move(next);story_loaded_node=std::size_t(-1);story_loaded_revision=unsigned(-1);
+        story_fight_started=story_boss_checkpoint=false;story_error.clear();story_art.clear();
+        if(audio){audio->stop_combat();audio->volumes(1,0,1);} // Story music/VO routing remains a separate adapter.
+        story_update_assets();
+    }
+    void leave_story() {
+        story_select=false;story_selection_unavailable=false;
+        training=TrainingView::none;practice_paused=false;pause_page.reset();
+        practice_keys_held={};practice_keys_previous={};practice_attack_edges={};
+        practice_effects.clear();practice_presentation={};practice_scene.reset();practice_background.reset();
+        story_release_combat_assets();
+        story.reset();story_art.clear();story_error.clear();story_fight_started=story_boss_checkpoint=false;
+        if(audio){audio->stop_combat();audio->volumes(1,1,1);audio->music("menu_intro","menu_loop");}
+    }
+    void story_update_assets() {
+        if(!story||story_loaded_revision==story->revision)return;
+        if(story_loaded_node!=story->route_index){story_art.clear();story_loaded_node=story->route_index;}
+        skullgirls::SpriteArchive art(game_data/"story_art.gfs");
+        std::vector<std::string> wanted;
+        for(const auto& [slot,path]:story->shots)if(!path.empty())wanted.push_back(path);
+        for(const auto& path:story->portraits)if(!path.empty())wanted.push_back(path);
+        for(auto it=story_art.begin();it!=story_art.end();) {
+            if(std::find(wanted.begin(),wanted.end(),it->first)==wanted.end())it=story_art.erase(it);else ++it;
+        }
+        for(const auto& path:wanted)if(!story_art.count(path)) {
+            auto bytes=skullgirls::read_story_art(art,path);
+            auto texture=std::make_unique<Texture>();if(bytes)texture->load(*bytes,Texture::Encoding::rgba,2048,8192);
+            story_art.emplace(path,std::move(texture));
+        }
+        if(story->phase==skullgirls::FiliaStory::Phase::credits && story->credit_page<story->credit_images.size()) {
+            const auto& path=story->credit_images[story->credit_page];
+            story_art.clear();
+            if(!path.empty()){skullgirls::SpriteArchive win(game_data/"ui-win.gfs");auto texture=std::make_unique<Texture>();texture->load(win.read(path));story_art.emplace(path,std::move(texture));}
+        }
+        story_loaded_revision=story->revision;
+    }
+    void story_start_fight() {
+        story_fight_started=true;story_boss_checkpoint=false;
+        fighters={};locked_colors={};
+        if(story->encounter_modified){story_boss_checkpoint=true;return;}
+        for(unsigned side=0;side<2;++side)for(std::size_t slot=0;slot<story->encounter_teams[side].size();++slot) {
+            const auto& name=story->encounter_teams[side][slot];const auto found=std::find(roster.begin(),roster.end(),name);
+            // Boss actors and special match modifiers retain their native route
+            // checkpoint; never substitute a different playable character.
+            if(found==roster.end()){story_boss_checkpoint=true;return;}
+            const auto id=int(found-roster.begin());fighters[side].push_back(id);
+            const auto color=story->encounter_colors[side][slot];
+            const auto palette=std::find_if(palettes[id].begin(),palettes[id].end(),[&](const auto& p){return p.number==color;});
+            locked_colors[side].push_back(palette==palettes[id].end()?0:std::size_t(palette-palettes[id].begin()));
+        }
+        for(unsigned side=0;side<2;++side)team_size[side]=int(fighters[side].size());
+        const auto fold=[](std::string x){for(auto& c:x)c=char(std::tolower(static_cast<unsigned char>(c)));return x;};
+        const auto stage=std::find_if(stages.begin(),stages.end(),[&](const auto& x){return fold(x.id)==fold(story->world);});
+        if(stage==stages.end()){story_boss_checkpoint=true;return;}
+        stage_selection.resolved=std::size_t(stage-stages.begin());training=TrainingView::stage_confirmed;
+        if(audio)audio->volumes(1,1,1);
+        start_practice();
+    }
+    void story_continue() {
+        if(!story)return;
+        if(story->phase==skullgirls::FiliaStory::Phase::complete){leave_story();return;}
+        const bool fight=story->phase==skullgirls::FiliaStory::Phase::fight;
+        if(fight){training=TrainingView::none;practice_paused=false;practice_keys_held={};practice_attack_edges={};practice_effects.clear();practice_presentation={};
+            if(audio){audio->stop_combat();audio->volumes(1,0,1);}}
+        if(fight)story_release_combat_assets();
+        story->advance();if(fight)story_fight_started=story_boss_checkpoint=false;
+        story_update_assets();
+    }
+    void story_tick() {
+        if(!story||!story_error.empty())return;
+        try {
+            story->tick();
+            if(story->phase==skullgirls::FiliaStory::Phase::fight) {
+                if(!story_fight_started)story_start_fight();
+                else if(!story_boss_checkpoint&&training==TrainingView::practice&&practice_presentation.phase==PracticePresentation::Phase::results&&practice_presentation.tick>30)story_continue();
+            }
+            story_update_assets();
+        }catch(const std::exception& e){story_error=e.what();training=TrainingView::none;}
+    }
+    bool story_input(WPARAM key,bool repeated) {
+        if(story_select) {
+            if(repeated)return true;
+            if(key==VK_ESCAPE||key=='X'){story_select=false;training=TrainingView::none;if(audio)audio->music("menu_intro","menu_loop");return true;}
+            if(key==VK_RETURN||key=='Z'||key=='A') {
+                if(fighter_cursor==10) {
+                    static std::mt19937 random(std::random_device{}());
+                    const auto& selected=skullgirls::story_characters[std::uniform_int_distribution<std::size_t>(0,skullgirls::story_characters.size()-1)(random)];
+                    begin_story(selected.id);
+                }else begin_story(roster[fighter_cursor]);
+            }else if(key==VK_LEFT||key==VK_RIGHT||key==VK_UP||key==VK_DOWN) {
+                story_selection_unavailable=false;training_input(key,false,false);
+            }
+            return true;
+        }
+        if(!story)return false;
+        if(repeated)return true;
+        if(key==VK_ESCAPE){leave_story();return true;}
+        if(!story_error.empty())return true;
+        const bool combat=story->phase==skullgirls::FiliaStory::Phase::fight&&!story_boss_checkpoint&&training==TrainingView::practice;
+        if(key==VK_RETURN&&story->phase==skullgirls::FiliaStory::Phase::scene) {
+            story->skip_scene();story_fight_started=story_boss_checkpoint=false;story_update_assets();return true;
+        }
+        if(key==VK_RETURN||(!combat&&(key==' '||key=='Z'||key=='A'))){story_continue();return true;}
+        return !combat;
+    }
+    void paint_story(Gdiplus::Graphics& dc) const {
+        using Phase=skullgirls::FiliaStory::Phase;
+        dc.Clear(Gdiplus::Color(255,0,0,0));
+        if(!story_error.empty()) {
+            draw_text(dc,L"Story preview could not continue",{80,220,1120,55},32,Gdiplus::StringAlignmentCenter);
+            draw_text(dc,story_wide(story_error).c_str(),{80,290,1120,160},23,Gdiplus::StringAlignmentCenter);
+        }else if(story->phase==Phase::scene) {
+            const auto draw=[&](auto&& self,const auto& node,float opacity)->void {
+                const auto& t=story->pose.at(node.id);opacity*=t.opacity;if(opacity<=0)return;
+                const auto& pivot=story->pose_pivots.at(node.id);
+                const auto state=dc.Save();dc.TranslateTransform(t.x,t.y);dc.RotateTransform(t.rotation);dc.TranslateTransform(-pivot[0],-pivot[1]);
+                if(!node.children.empty()) {
+                    if(node.transform.width&&node.transform.height)dc.ScaleTransform(t.width/node.transform.width,t.height/node.transform.height);
+                    for(const auto& child:node.children)self(self,child,opacity);
+                }else {
+                    const auto flags=story->scene.flips.at(story->view).find(node.id);
+                    if(flags!=story->scene.flips.at(story->view).end()) {
+                        if(flags->second[0]){dc.TranslateTransform(t.width,0);dc.ScaleTransform(-1,1);}
+                        if(flags->second[1]){dc.TranslateTransform(0,t.height);dc.ScaleTransform(1,-1);}
+                    }
+                    const auto shot=story->shots.find(node.name);
+                    if(shot!=story->shots.end()) {
+                        const auto texture=story_art.find(shot->second);
+                        if(texture!=story_art.end()&&texture->second->bitmap&&t.width>0&&t.height>0) {
+                            const auto color=story->pose_colors.at(node.id);
+                            if((color&0xffffff)==0xffffff)texture->second->draw(dc,0,0,t.width,t.height,BYTE(std::clamp(opacity,0.f,1.f)*255));
+                            else {
+                                // Authored fades, alarms and nightmare shots tint
+                                // textured sprites as well as untextured panels.
+                                Gdiplus::ColorMatrix matrix{};
+                                matrix.m[0][0]=float((color>>16)&255)/255;
+                                matrix.m[1][1]=float((color>>8)&255)/255;matrix.m[2][2]=float(color&255)/255;
+                                matrix.m[3][3]=std::clamp(opacity,0.f,1.f);matrix.m[4][4]=1;
+                                Gdiplus::ImageAttributes attributes;attributes.SetColorMatrix(&matrix);
+                                const auto& image=*texture->second;
+                                dc.DrawImage(image.pixels(),Gdiplus::RectF(0,0,t.width,t.height),0,0,image.width,image.height,Gdiplus::UnitPixel,&attributes);
+                            }
+                        }
+                    }else if(node.texture==0xeb01ffff) {
+                        const auto color=story->pose_colors.at(node.id);
+                        Gdiplus::SolidBrush brush(Gdiplus::Color(BYTE(std::clamp(opacity,0.f,1.f)*255),BYTE(color>>16),BYTE(color>>8),BYTE(color)));
+                        dc.FillRectangle(&brush,0.f,0.f,std::max(0.f,t.width),std::max(0.f,t.height));
+                    }
+                }dc.Restore(state);
+            };
+            for(const auto& node:story->scene.views.at(story->view).nodes)draw(draw,node,1);
+            if(story->dialogue&&!story->cinematic)for(unsigned side=0;side<2;++side) {
+                const auto found=story_art.find(story->portraits[side]);if(found==story_art.end()||!found->second->bitmap)continue;
+                const auto& t=*found->second;
+                // CutsceneGeneral2013: regular heads use 640x720 slots; XL
+                // heads use a 1280x720 canvas. The original Left nodes have
+                // horizontal flip set (+124 = 1), while Right nodes do not.
+                const float w=story->portrait_xl[side]?1280.f:640.f;
+                const auto state=dc.Save();
+                if(!side){dc.TranslateTransform(w,0);dc.ScaleTransform(-1,1);}
+                t.draw(dc,side&&!story->portrait_xl[side]?640.f:0.f,0,w,720);dc.Restore(state);
+            }
+            if(!story->text.empty()) {
+                Gdiplus::SolidBrush panel(Gdiplus::Color(232,13,12,22));dc.FillRectangle(&panel,38.f,500.f,1204.f,192.f);
+                auto speaker=story_wide(story->speaker);auto text=story_wide(story->text);
+                draw_text(dc,speaker.c_str(),{66,510,1148,34},25,Gdiplus::StringAlignmentNear);
+                Gdiplus::Font font(L"Arial",25,Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
+                Gdiplus::SolidBrush ink(Gdiplus::Color(255,255,255,255));Gdiplus::StringFormat format;
+                if(story->text.rfind("{hn",0)==0) {
+                    float x=66;const float scale=2.2f;
+                    for(std::size_t at=0;at<story->text.size();) {
+                        const auto close=story->text.find('}',at);if(close==std::string::npos)break;
+                        const auto found=story->scene.symbols.find(story->text.substr(at+1,close-at-1));
+                        if(found==story->scene.symbols.end())throw std::runtime_error("Missing Hungern dialogue glyph");
+                        const auto& g=found->second;const auto& atlas=story_symbol_atlases.at(g.page);
+                        if(atlas)dc.DrawImage(atlas->pixels(),Gdiplus::RectF(x,552,g.width*scale,g.height*scale),float(g.x),float(g.y),float(g.width),float(g.height),Gdiplus::UnitPixel);
+                        x+=(g.width+4)*scale;at=close+1;
+                    }
+                }else dc.DrawString(text.c_str(),int(text.size()),&font,Gdiplus::RectF(66,550,1148,125),&format,&ink);
+            }
+        }else if(story->phase==Phase::fight) {
+            std::string opponent;for(const auto& name:story->enemies){if(!opponent.empty())opponent+=" / ";opponent+=name;}
+            draw_text(dc,story_wide(story->character_name+" vs "+opponent).c_str(),{80,240,1120,60},40,Gdiplus::StringAlignmentCenter);
+            draw_text(dc,L"Scripted encounter — story preview checkpoint",{80,325,1120,45},25,Gdiplus::StringAlignmentCenter);
+            draw_text(dc,L"Enter: continue the story",{80,390,1120,45},25,Gdiplus::StringAlignmentCenter);
+        }else if(story->phase==Phase::credits) {
+            draw_text(dc,L"SKULLGIRLS — CREDITS",{80,25,1120,40},30,Gdiplus::StringAlignmentCenter);
+            if(story->credit_page<story->credits.size()) {
+                const auto& page=story->credits[story->credit_page];
+                const auto image=story_art.find(story->credit_images[story->credit_page]);
+                const bool has_image=image!=story_art.end(),top=story->credit_layouts[story->credit_page]=="TopImage";
+                const float area=has_image?335.f:560.f,base=has_image&&top?330.f:85.f;
+                const float step=std::min(29.f,area/std::max(1.f,float(page.size())));
+                if(has_image){const auto& t=*image->second;const float h=230,w=h*t.width/t.height;t.draw(dc,(1280-w)/2,top?85.f:445.f,w,h);}
+                for(std::size_t i=0;i<page.size();++i)draw_text(dc,story_wide(page[i]).c_str(),{80,base+float(i)*step,1120,step},std::min(24.f,step-2),Gdiplus::StringAlignmentCenter);
+            }
+        }else draw_text(dc,story_wide(story->character_name+"’s story complete").c_str(),{80,280,1120,70},42,Gdiplus::StringAlignmentCenter);
+        draw_text(dc,story->phase==Phase::scene?L"Space / Z: next line     Enter / Start: skip cutscene     Esc: menu":L"Enter / Space / Z: continue     Esc: return to menu",{80,695,1120,23},16,Gdiplus::StringAlignmentCenter);
+    }
+    void activate_menu_option(){
+        const auto& entries=options[selected];
+        if(cursor>=entries.size())return;
+        const auto& option=entries[cursor];
+        if(cursor+1==entries.size())set_submenu(false);
+        else if(selected==4&&option.keyword=="Story Mode")begin_story_select();
+        else if(selected==5&&option.keyword=="Local_Versus")begin_local_versus();
+        else if(selected==6&&cursor==0){local_versus=false;network_mode=false;training=TrainingView::options;}
+        else unavailable=true;
     }
     bool exit_prompt = false;
     bool unavailable = false;
@@ -12233,7 +12693,7 @@ struct Menu {
                 } else if (!entries.empty()) {
                     auto& option = entries.back();
                     if (line == "DefaultCursorPos") default_cursor[i] = entries.size() - 1;
-                    if (line.rfind("Text: ", 0) == 0) option.label = option_label(line.substr(6));
+                    if (line.rfind("Text: ", 0) == 0) {option.keyword=line.substr(6);option.label = option_label(option.keyword);}
                     if (line.rfind("DefaultChoice: ", 0) == 0) option.choices.push_back(option_label(line.substr(15)));
                     if (line.rfind("Choice: ", 0) == 0) option.choices.push_back(option_label(line.substr(8)));
                 }
@@ -12323,6 +12783,7 @@ struct Menu {
         }
         select_header.draw(dc, 407.6f, 35.2f, 465, 70);
         for (int side = 0; side < 2; ++side) {
+            if(story_select&&side==1)continue;
             const auto left = side ? 839.0f : 71.0f;
             for (int slot : {2, 1, 0}) {
                 const auto& base = pedestal_layout.bases[side][slot];
@@ -12454,6 +12915,22 @@ struct Menu {
             if (training == TrainingView::stage_confirmed)
                 draw_text(dc, L"Stage selected", {420, 690, 440, 28}, 21, Gdiplus::StringAlignmentCenter);
         }
+        if(local_versus&&!showing_stage_select()){
+            if(!controller_names[player].empty()){
+                const auto& name=controller_names[player];
+                const auto hint=L"PLAYER "+std::to_wstring(player+1)+L": "+std::wstring(name.begin(),name.end())+L"   Stick/Pad: Move   A/Start: Confirm   B/Back: Back   Y: Palette";
+                draw_text(dc,hint.c_str(),{120,680,1040,30},18,Gdiplus::StringAlignmentCenter);
+            }else draw_text(dc,
+                player?L"PLAYER 2: I J K L move   V B N / F G H select   Enter: Palette   Esc: Back":L"PLAYER 1: Arrow keys move   A S D / Z X C select   Enter: Palette   Esc: Back",
+                {160,680,960,30},18,Gdiplus::StringAlignmentCenter);
+        }
+        if(story_select) {
+            Gdiplus::SolidBrush panel(Gdiplus::Color(235,12,12,22));dc.FillRectangle(&panel,180.f,8.f,920.f,48.f);
+            draw_text(dc,L"STORY MODE — SELECT CHARACTER",{180,12,920,40},27,Gdiplus::StringAlignmentCenter);
+            const auto hint=L"Arrows: choose    A / Z / Enter: begin story    Esc: back";
+            dc.FillRectangle(&panel,100.f,665.f,1080.f,46.f);
+            draw_text(dc,hint,{110,674,1060,32},21,Gdiplus::StringAlignmentCenter);
+        }
         if (training == TrainingView::fighters) {
             (player ? select_cursor_p2 : select_cursor).draw(dc,
                 521.5f + (fighter_cursor % 3) * 71, 90.0f + (fighter_cursor / 3) * 71, 96, 96);
@@ -12481,9 +12958,11 @@ struct Menu {
         }
         dc.SetInterpolationMode(Gdiplus::InterpolationModeBilinear);
         dc.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+        if(story && (training!=TrainingView::practice || !story_error.empty())){paint_story(dc);return;}
         if (training == TrainingView::practice) {
             dc.SetInterpolationMode(Gdiplus::InterpolationModeBilinear);
             paint_practice(dc);
+            if(story)draw_text(dc,L"Story preview — enemy idle     Enter: next scene     Esc: menu",{180,694,920,24},18,Gdiplus::StringAlignmentCenter);
             return;
         }
         dc.DrawImage(background.get(), 0, 0, 1280, 720);
@@ -12657,21 +13136,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         InvalidateRect(window, nullptr, FALSE);
         return 0;
     case WM_KILLFOCUS:
-        menu.practice_keys_held = {};
-        menu.practice_keys_previous = {};
-        menu.practice_attack_edges = {};
-        for (auto& player : menu.practice_players) {
-            player.practice_left = player.practice_right = false;
-            player.practice_down = player.practice_up = false;
-            player.normal_input = -1;
-            player.queued_followup = -1;
-            player.normal_inputs = {};
-            player.buffered_special.reset();
-            player.throw_input = false;
-            player.pressed_punches = player.pressed_kicks = 0;
-            player.held_attack_buttons = 0;
-            player.dash_input_history.fill(skullgirls::filia_neutral);
-        }
+        menu.release_practice_inputs();
+        InvalidateRect(window,nullptr,FALSE);
         break;
     case WM_KEYUP:
         if (menu.training == Menu::TrainingView::practice) {
@@ -12681,6 +13147,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         break;
     case WM_KEYDOWN: {
         if (menu.practice_load.valid()) return 0;
+        if(menu.story_input(wparam,(lparam & (1L<<30))!=0)){InvalidateRect(window,nullptr,FALSE);return 0;}
         if (menu.training == Menu::TrainingView::practice) {
             const bool repeated = (lparam & (1L << 30)) != 0;
             if (menu.practice_input(wparam, repeated, GetKeyState(VK_SHIFT) < 0)) {
@@ -12688,7 +13155,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 if (menu.training == Menu::TrainingView::stage_select)
                     caption = L"Skullgirls - Select Stage";
                 else if (menu.training == Menu::TrainingView::practice)
-                    caption = menu.practice_paused ? L"Skullgirls - Paused" : L"Skullgirls - Training Room";
+                    caption = menu.practice_paused ? L"Skullgirls - Paused" : menu.local_versus?L"Skullgirls - Local Versus":L"Skullgirls - Training Room";
                 SetWindowTextW(window, caption);
                 InvalidateRect(window, nullptr, FALSE);
             }
@@ -12733,10 +13200,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                     const auto count = option.choices.size();
                     option.choice = (option.choice + (wparam == VK_LEFT ? count - 1 : 1)) % count;
                 } else if (accept) {
-                    if (menu.cursor + 1 == entries.size()) menu.set_submenu(false);
-                    else if (menu.selected == 6 && menu.cursor == 0)
-                        menu.training = Menu::TrainingView::options;
-                    else menu.unavailable = true;
+                    menu.activate_menu_option();
                 }
             }
         } else if (wparam == VK_UP || wparam == VK_DOWN) {
@@ -12760,7 +13224,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         case Menu::TrainingView::options: caption = L"Skullgirls - Training Options"; break;
         case Menu::TrainingView::team_size: caption = L"Skullgirls - Select Team Size"; break;
         case Menu::TrainingView::fighters: caption = menu.choosing_palette ? L"Skullgirls - Select Palette" : L"Skullgirls - Select Fighter"; break;
-        case Menu::TrainingView::practice: caption = L"Skullgirls - Training Room"; break;
+        case Menu::TrainingView::practice: caption = menu.local_versus?L"Skullgirls - Local Versus":L"Skullgirls - Training Room"; break;
         case Menu::TrainingView::stage_select: caption = L"Skullgirls - Select Stage"; break;
         case Menu::TrainingView::stage_confirmed: caption = L"Skullgirls - Stage Selected"; break;
         default: break;
@@ -12935,6 +13399,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
     PracticeCadence practice_cadence;
     unsigned skipped_practice_frames = 0;
     ShowWindow(window, show);
+    skullgirls::WindowsControllers controllers;controllers.initialize();
 
     for (;;) {
         MSG message{};
@@ -12948,6 +13413,13 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
 
         const auto now = Clock::now();
         if (now >= deadline) {
+            const bool was_paused=menu.practice_paused;
+            menu.controller_frame(controllers.poll(),GetForegroundWindow()==window,[&](WPARAM key){
+                window_proc(window,WM_KEYDOWN,key,0);
+                window_proc(window,WM_KEYUP,key,0);
+            });
+            if(was_paused!=menu.practice_paused)InvalidateRect(window,nullptr,FALSE);
+            menu.story_tick();
             if (menu.training == Menu::TrainingView::practice && !menu.practice_paused) {
                 // Bound catch-up after suspension or a long stall. Keep the simulation
                 // on its own 60 Hz clock between presentations.
@@ -12966,7 +13438,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
                 menu.practice_load.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                 try {
                     menu.finish_practice(window);
-                    SetWindowTextW(window, L"Skullgirls - Training Room");
+                    SetWindowTextW(window, menu.local_versus?L"Skullgirls - Local Versus":L"Skullgirls - Training Room");
                 } catch (const std::exception& error) {
                     menu.training = Menu::TrainingView::stage_select;
                     SetWindowTextW(window, L"Skullgirls - Select Stage");

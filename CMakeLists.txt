@@ -70,6 +70,17 @@ if(BUILD_TESTING)
     add_test(NAME stage-scene COMMAND stage-scene-test)
 endif()
 
+if(BUILD_TESTING)
+    add_executable(story-roster-test tests/story_roster_test.cpp)
+    target_link_libraries(story-roster-test PRIVATE skullgirls_sprite_assets)
+    add_executable(story-test tests/story_test.cpp)
+    target_link_libraries(story-test PRIVATE skullgirls_sprite_assets)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/runtime/data02/story_art.gfs")
+        add_test(NAME story-roster COMMAND story-roster-test "${CMAKE_SOURCE_DIR}/runtime/data02")
+        add_test(NAME story COMMAND story-test "${CMAKE_SOURCE_DIR}/runtime/data02")
+    endif()
+endif()
+
 add_executable(skullgirls-sprite src/sprite_main.cpp)
 target_link_libraries(skullgirls-sprite PRIVATE skullgirls_sprite_assets)
 
@@ -93,7 +104,7 @@ if(UNIX AND NOT APPLE)
             add_test(NAME audio-assets COMMAND audio-data-test "${SKULLGIRLS_TEST_DATA_DIR}")
             add_test(NAME audio-output COMMAND skullgirls-main-menu "${SKULLGIRLS_TEST_DATA_DIR}" --audio-smoke-test)
             set_tests_properties(audio-output PROPERTIES ENVIRONMENT "SDL_AUDIODRIVER=dummy")
-            foreach(fighter IN ITEMS filia cerebella peacock parasoul msfortune painwheel robofortune valentine squigly fukua double bigband eliza beowulf annie umbrella marie blackdahlia intro reference netplay)
+            foreach(fighter IN ITEMS filia cerebella peacock parasoul msfortune painwheel robofortune valentine squigly fukua double bigband eliza beowulf annie umbrella marie blackdahlia versus controller story story_roster intro reference netplay)
                 add_executable(${fighter}-moves-test tests/${fighter}_moves_test.cpp src/menu_timings.cpp src/title_scene.cpp src/fighter_select.cpp src/select_idle.cpp)
                 target_link_libraries(${fighter}-moves-test PRIVATE skullgirls_sprite_assets skullgirls_netplay PkgConfig::LINUX_PLATFORM Threads::Threads)
                 add_test(NAME ${fighter}-moves COMMAND ${fighter}-moves-test "${SKULLGIRLS_TEST_DATA_DIR}")
@@ -114,6 +125,16 @@ if(WIN32)
     if(MSVC)
         target_link_options(skullgirls-main-menu PRIVATE /LARGEADDRESSAWARE)
     endif()
+    # Optional SDL3 controller runtime installed by prepare-controllers.ps1.
+    # Copy it beside build executables as well as the portable runtime.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/runtime/SDL3.dll")
+        file(COPY "${CMAKE_SOURCE_DIR}/runtime/SDL3.dll" DESTINATION "${CMAKE_BINARY_DIR}/Release")
+        file(COPY "${CMAKE_SOURCE_DIR}/runtime/SDL3.dll" DESTINATION "${CMAKE_BINARY_DIR}/Debug")
+        if(EXISTS "${CMAKE_SOURCE_DIR}/runtime/LICENSE-SDL3.txt")
+            file(COPY "${CMAKE_SOURCE_DIR}/runtime/LICENSE-SDL3.txt" DESTINATION "${CMAKE_BINARY_DIR}/Release")
+            file(COPY "${CMAKE_SOURCE_DIR}/runtime/LICENSE-SDL3.txt" DESTINATION "${CMAKE_BINARY_DIR}/Debug")
+        endif()
+    endif()
     # Put the preview beside the local runtime data for launches from any working directory.
     add_custom_command(TARGET skullgirls-main-menu POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/runtime"
@@ -131,7 +152,7 @@ if(WIN32)
         # Register fighter and intro tests when the local archives are present at configure time.
         set(SKULLGIRLS_TEST_DATA_DIR "${CMAKE_SOURCE_DIR}/runtime/data02" CACHE PATH "Game data directory for asset-backed tests")
         if(EXISTS "${SKULLGIRLS_TEST_DATA_DIR}/characters-foits.gfs")
-            foreach(fighter IN ITEMS filia cerebella peacock parasoul msfortune painwheel robofortune valentine squigly fukua double bigband eliza beowulf annie umbrella marie blackdahlia intro reference netplay)
+            foreach(fighter IN ITEMS filia cerebella peacock parasoul msfortune painwheel robofortune valentine squigly fukua double bigband eliza beowulf annie umbrella marie blackdahlia versus controller story story_roster intro reference netplay)
                 add_executable(${fighter}-moves-test tests/${fighter}_moves_test.cpp src/menu_timings.cpp src/title_scene.cpp src/fighter_select.cpp src/select_idle.cpp)
                 target_link_libraries(${fighter}-moves-test PRIVATE skullgirls_sprite_assets skullgirls_netplay shell32 gdi32 user32 gdiplus d3d11 d3dcompiler)
                 if(MSVC)
@@ -144,4 +165,11 @@ if(WIN32)
             endforeach()
         endif()
     endif()
+endif()
+
+# Compile the preview and its story regressions together so their shared menu
+# translation units can build concurrently on multi-core development machines.
+if(TARGET story_roster-moves-test AND TARGET skullgirls-main-menu)
+    add_custom_target(story-preview-check DEPENDS skullgirls-main-menu
+        story-test story-roster-test story-moves-test story_roster-moves-test)
 endif()
