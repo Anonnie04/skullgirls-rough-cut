@@ -13,6 +13,10 @@ using FoitInputHistory = std::array<FoitInputSample, 64>;
 
 // A missing value means that the host has not implemented that engine variable.
 struct FoitScriptState {
+    std::vector<FoitNamedPoint> points;
+    // FUN_0044d080 subtracts the layer offset before FUN_004971f0 adds
+    // layer-offset minus origin: the combined point offset is -origin.
+    std::array<std::int32_t,2> point_offset{};
     std::optional<std::vector<std::uint32_t>> move_categories;
     std::array<std::optional<float>, 0xb1> variables{};
     std::array<std::optional<bool>, 128> bits{};

@@ -32,7 +32,7 @@ void ready(Menu& menu, std::string_view name) {
     for (unsigned side = 0; side < 2; ++side) {
         const auto& fighter = menu.practice_players[side];
         if (const auto* actor = fighter.scripted()) {
-            check((name=="fukua" && actor->move==22) || actor->move == (name == "msfortune" || name == "painwheel" || name == "squigly" || name == "fukua" ? 21u : 20u), "Returns to playable idle: " + std::string(name));
+            check((name=="fukua" && actor->move==22) || actor->move == (name == "msfortune" || name == "painwheel" || name == "squigly" || name == "fukua" || name == "double" || name == "bigband" || name == "eliza" || name == "beowulf" || name == "annie" || name == "umbrella" || name == "marie" || name == "blackdahlia" ? 21u : 20u), "Returns to playable idle: " + std::string(name));
             check(actor->visual.freeze == 0, "Intro leaves no freeze");
         }
         if (fighter.msfortune) {
@@ -45,11 +45,11 @@ void ready(Menu& menu, std::string_view name) {
 }
 void variants_and_skips(Menu& menu, std::initializer_list<const char*> names = {"filia", "peacock", "msfortune", "cerebella", "parasoul"}) {
     for (auto name : names) {
-        const unsigned variants = (std::string_view(name) == "peacock" || std::string_view(name) == "fukua") ? 4 : 3;
+        const unsigned variants = (std::string_view(name) == "peacock" || std::string_view(name) == "fukua" || std::string_view(name) == "bigband" || std::string_view(name) == "marie") ? 4 : 3;
         for (unsigned cycle = 0; cycle < variants; ++cycle) {
             select(menu, name, cycle);
             unsigned ticks = 0;
-            while (menu.practice_presentation.phase == Phase::intro && ticks++ < 600) menu.practice_tick();
+            while (menu.practice_presentation.phase == Phase::intro && ticks++ < (std::string_view(name)=="blackdahlia"?900u:600u)) menu.practice_tick();
             check(menu.practice_presentation.phase == Phase::none, "Native done signals complete: " + std::string(name));
             ready(menu, name);
             // These checkpoints include the hidden body, the proxy handoff,
@@ -139,7 +139,7 @@ int main(int argc, char** argv)
     try {
         // Keep only one fighter's extra assets resident at a time. This also
         // lets the Linux suite run alongside a desktop on machines with 8 GB RAM.
-        for (const auto* name : {"filia", "peacock", "msfortune", "cerebella", "parasoul", "painwheel", "valentine", "squigly", "fukua"}) {
+        for (const auto* name : {"filia", "peacock", "msfortune", "cerebella", "parasoul", "painwheel", "valentine", "squigly", "fukua", "double", "bigband", "eliza", "beowulf", "annie", "umbrella", "marie", "blackdahlia"}) {
             auto menu_storage = std::make_unique<Menu>(); auto& menu = *menu_storage;
             menu.game_data = argv[1];
             menu.load_movement_frames();
@@ -151,12 +151,20 @@ int main(int argc, char** argv)
             if (std::string_view(name) == "valentine") menu.load_valentine();
             if (std::string_view(name) == "squigly") menu.load_squigly();
             if (std::string_view(name) == "fukua") menu.load_fukua();
+            if (std::string_view(name) == "double") menu.load_double_actor();
+            if (std::string_view(name) == "bigband" || std::string_view(name) == "marie") menu.load_bigband();
+            if (std::string_view(name) == "eliza") menu.load_eliza();
+            if (std::string_view(name) == "beowulf") menu.load_beowulf();
+            if (std::string_view(name) == "annie") menu.load_annie();
+            if (std::string_view(name) == "umbrella") menu.load_umbrella();
+            if (std::string_view(name) == "marie") menu.load_marie();
+            if (std::string_view(name) == "blackdahlia") menu.load_blackdahlia();
             menu.practice_width = 1700; menu.practice_height = 900; menu.practice_floor = 145;
             menu.practice_starts = {700, 1000};
             authored_events(menu, name);
             variants_and_skips(menu, {name});
         }
-        std::cout << "All nine characters' intro variants, child events, visibility, head restoration, skips, and saves passed\n";
+        std::cout << "All sixteen characters' intro variants, child events, visibility, head restoration, skips, and saves passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

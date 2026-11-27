@@ -22,6 +22,7 @@ struct CerebellaPlayback {
     bool mirror_script_positions = false;
     unsigned throw_damage = 0;
     unsigned throw_damage_slot = 0x78;
+    bool defer_throw_damage = false;
     FoitScriptState target_state = [] {
         FoitScriptState value;
         for (auto& slot : value.variables) slot = 0.0f;
@@ -94,7 +95,7 @@ struct CerebellaPlayback {
         hit_resolved = true;
         auto& counter = state.variables[blocked ? 0x02 : 0x01];
         *counter += 1.0f;
-        state.variables[0x03] = 1.0f;
+        state.variables[0x03] = value(0x03) + 1.0f;
     }
 
     void sample(unsigned direction, unsigned pressed, unsigned buttons, bool grounded, unsigned meter) {
@@ -194,7 +195,7 @@ struct CerebellaPlayback {
             expression.right = operand(expression.right);
             apply_foit_assignment(expression, target_state);
         }
-        if (value(throw_damage_slot) != 0 && value(0x74) > 0) {
+        if (!defer_throw_damage && value(throw_damage_slot) != 0 && value(0x74) > 0) {
             throw_damage += static_cast<unsigned>(value(0x74));
             state.variables[throw_damage_slot] = 0.0f;
         }

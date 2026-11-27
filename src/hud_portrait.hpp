@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 
 namespace skullgirls {
 
@@ -75,13 +76,22 @@ inline HudPaletteMap read_hud_palette_map(const SpriteBytes& foit)
     const auto groups=read(1);
     if (!groups) throw std::runtime_error("Empty HUD palette groups");
     unsigned index=0;
+    unsigned portrait_veil=0;
     for(unsigned group=0;group<groups;++group) {
         const auto count=read(1);
         read(2); // Lighting and group flags.
-        skip_string();
-        if (!count || count>result.size()-index) throw std::runtime_error("Invalid HUD palette group size");
-        for(unsigned i=0;i<count;++i) result[index++]=std::uint8_t(group);
+        const auto length=read(1);std::string name;
+        for(unsigned i=0;i<length;++i)name.push_back(char(read(1)));
+        if(name=="portrait veil")portrait_veil=group;
+        if (!count) throw std::runtime_error("Invalid HUD palette group size");
+        // Marie has more than 256 expanded character-color indices.
+        // HUD PCX indices address only the first 256; still read every group.
+        for(unsigned i=0;i<count;++i,++index)
+            if(index<result.size())result[index]=std::uint8_t(group);
     }
+    // Dahlia's portrait uses reserved PCX index 2 for its separate opaque
+    // veil ramp, which lies beyond the 8-bit body-color index range.
+    if(portrait_veil)result[2]=std::uint8_t(portrait_veil);
     return result;
 }
 

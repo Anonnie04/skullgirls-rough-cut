@@ -7,8 +7,375 @@ links the Steam installation.
 
 The preview covers the title screen, main menu, Training Options,
 character and palette selection, stage selection, and a playable Training
-Room for Filia, Cerebella, Peacock, Parasoul, Ms. Fortune, Painwheel, Robo-Fortune, Valentine, Squigly, and Fukua.
+Room for Filia, Cerebella, Peacock, Parasoul, Ms. Fortune, Painwheel, Robo-Fortune, Valentine, Squigly, Fukua, Double, Big Band, Eliza, Beowulf, Annie, Umbrella, Marie, and Black Dahlia.
 The command-line tools inspect GFS archives and export sprite layers and frames.
+
+## Black Dahlia playable integration (2026-11-27)
+
+Black Dahlia fills the eighteenth Training roster slot with her original
+FOIT tables, sprites, palettes, sound events, portraits and authored inputs.
+The adapter covers movement, normals, command jump, ground/air throws,
+gunshots, reload timelines, doily/teleport entries and super timelines.
+The native six-round cylinder remains encoded in slot `0x63`; script power
+arithmetic (`0x22`) now supports its decimal slot extraction. Native interpolation
+(`0x73`, reading the destination as the weight) evaluates the bullets' quadratic
+trajectories; a regression covers interpolation and extrapolation. Root random
+operands use saved deterministic state, matching the existing child evaluator's
+approach so replay restores chamber selection. The actual native RNG sequence
+is not claimed to match the original executable.
+
+Persistent empowered-effect and ammunition-manager children are created for
+ordinary play and entries that bypass the root creation move (tags/assists).
+The manager has a native 20-frame initialization; reload tests allow that
+initialization to complete. Immediate reload input during those initial frames
+is not verified. Command jump landing retains downward velocity until the
+native landing condition has evaluated. Shots are checked for ranged damage,
+ammunition consumption and recovery in both directions. Throws, tags, assists
+and deterministic replay have dedicated checks.
+
+The HUD portrait reserves PCX index 2 for a veil ramp. The character palette's
+named `portrait veil` group lies beyond the 8-bit body-index range; mapping
+that reserved portrait index to the named group avoids the magenta temporary
+background ramp. This mapping is inferred from the installed art and palette
+metadata. Native intro variants include their extra idle loops, so their test
+budget allows up to 900 ticks without altering the authored timelines.
+
+Counter/empower incoming-hit callbacks, barrel/oil ignition, sticky-bomb
+attachment/detonation interactions, full bunny behavior, ammunition HUD and
+team/DHC parity remain unfinished or unverified under `TODO(BLACKDAHLIA)`.
+Super timeline/meter tests alone do not establish damaging super parity.
+This is first-pass roster coverage, not complete original-game parity or a
+new frame-pacing measurement. Changes remain local until explicitly published.
+
+Windows Release build and all 29 CTest cases pass (181.89 seconds), including
+all earlier character suites, portrait/palette arithmetic regressions, three
+Dahlia intro variants and skips, reference scenes and replay. The portable
+`runtime/skullgirls-main-menu.exe` matches the Release executable. Render
+fixtures are available through `blackdahlia-moves-test <data-directory> --preview`.
+Training now has first-pass playable coverage for all 18 roster characters.
+
+## Marie playable integration (2026-11-27)
+
+Marie is selectable in Training with her original FOIT root/child tables,
+sprites, palettes, HUD/super portraits and audio. Both installed data folders
+have the same 555 move names and 3,143 authored records. The adapter uses that
+local table, including its native 1.5 gravity, movement/double jumps, ground,
+crouching and air normals, held crouching-LP scrub, throws and recovery paths.
+No separate Mortuary Charge move name was found, but the palette metadata does
+reference its effects; absence of a move name does not establish absence of
+the mechanic. Its resource/resurrection callbacks remain unimplemented.
+
+Twirl, Dust Bunny tosses, ground/air Gigan Laser and Gigan Punch, Vacuum Grab,
+Giant Fist, Super Grab and Skeleton Orb retain their native command conditions,
+timelines and meter scripts. Light Twirl has no native hit descriptor and is
+tested as evasive movement. Gigan children receive native opponent distance,
+allowing their authored tracking and different impact ranges. Ground/air
+throws and Vacuum Grab use native poses, damage and release. Super Grab's hand
+owns its capture and follows its original success/forced-finish records while
+notifying Marie's input-control states.
+
+Skeleton Orb's release signal is retained when it arrives while the child is
+frozen, then consumed by its native transition after the clock resumes. This
+uses a shared immutable owner-state snapshot, allocated only when needed,
+which survives rollback without enlarging every entity with an inline state.
+Its recovery enters the authored falling/landing sequence and returns to idle.
+Root and child contexts retain original hit data and use the existing deferred
+capture-damage handling. Tags, assists and result/intro dispatch use Marie's
+own heap-backed actor and assets.
+
+Marie has more than 256 expanded palette-color indices. The HUD reader now
+reads every group while storing only indices addressable by the 8-bit PCX
+layer. A regression covers a valid group crossing the 256-index boundary and
+retains truncated-input rejection. Idle, normal and super renders were checked.
+
+Mortuary Charge/resource callbacks and Dust Bunny interaction/attachment
+callbacks remain unfinished under `TODO(MARIE)`. Dust Bunny creation, trajectory
+and owner recovery are tested separately from damaging attacks. Exhaustive
+manual Super Grab direction sequences, summon interruption, armor,
+invulnerability, camera and team/DHC parity are not claimed. The local neutral
+air loop does not directly link to Skeleton Orb; its aerial command is tested
+through the authored air-reversal entry. No measured frame-pacing or
+reference-video comparison was performed.
+
+The Marie suite covers both facings, normals, native special/super commands,
+meter gates, actionable recovery, damaging normals/Gigan attacks/supers,
+throws and child capture/release, Dust Bunny creation, tags/assists and replay
+of a fist, laser, throw and Skeleton Orb. Intro regression includes all four
+Marie variants and skips. Render fixtures can be regenerated with
+`marie-moves-test <data-directory> --preview`.
+Windows Release build and all 28 CTest cases pass, including existing character,
+portrait, intro and rollback regressions. The portable executable is updated.
+Training now has 17 playable characters from the 18-character roster.
+
+## Umbrella playable integration (2026-11-26)
+
+Umbrella is selectable in Training with native FOIT root/child tables, sprites,
+palettes, HUD/super portraits and sounds. Her persistent Hunger manager and
+Hungern attachment use the original scripts and named sprite points. The
+manager starts from the native 444 gauge default, selects all four authored
+states, updates their rates and clamps the gauge to 0..1000. Ground/crouch/air
+normals and recovery paths retain their state variants; movement uses native
+1.5 gravity and directional jump records.
+
+Cutie Ptooie, Bobblin Bubble, Wish Maker, Hungern Rush, Slurp n Slide, bite and
+tongue command entries use native input conditions and timelines. Ground/air
+throws, Hunger-dependent bite catches with chomp input, Hungern Rush catches
+and tongue retract/chew/spit use authored target poses, damage and release.
+The tongue child switches to its native catch animation on collision and
+notifies the owner's retract/chew links. Capture entry initializes its first
+record before timer-dependent links can select an exit.
+
+Falling Bomb, Retina Reflector variants and Feeding Time retain native meter
+gates, freeze/cut-in events and child entities. Root owner operands now bind
+to Umbrella itself, including Feeding Time's Hunger-selected damage. Capture
+damage is consumed after the full record and conditional variants, preventing
+stale damage from being applied when the trigger precedes its amount. Existing
+actors retain their previous damage-consumption behavior. Umbrella contexts
+also provide the character-entity hash used by native BossMarie exclusions.
+Tag-in landing returns to an actionable idle; assists and rollback use an
+independent heap-backed actor, including Hunger, timers, captures and children.
+
+Bobblin pop/attack interactions, Wish Maker capture callbacks, Bubble Jump,
+standing-HK catch eligibility and projectile reflection remain unfinished under
+`TODO(UMBRELLA)`. The dedicated Hunger HUD, all bubble interactions and exhaustive
+team/DHC/invulnerability parity are not claimed. Bubble creation/recovery is
+verified separately from damaging projectile tests. No reference-video or
+measured 60-fps comparison was performed, and stage/camera rendering was not
+changed.
+
+The Umbrella suite covers normals in all four states and both facings, native
+commands and super costs, Hunger thresholds/rates, damaging attacks/projectiles,
+throw/bite/rush/tongue captures and release, bubble creation, tags/assists and
+deterministic replay of a super, projectile and throw. Normal, idle and super
+preview frames were inspected; regenerate them with
+`umbrella-moves-test <data-directory> --preview`.
+Windows Release build and all 27 CTest cases pass, including existing actor,
+intro/skip and rollback regressions. The portable executable is updated.
+Training now has 16 playable characters from the 18-character roster.
+
+## Annie playable integration (2026-11-26)
+
+Annie is selectable in Training with her original FOIT move tables, sprites,
+palettes, HUD/super portraits, sounds and child entities. Standing, crouching
+and air normals, multi-part normal links, movement/double jumps, ground and
+air throws, Crescent Cut, Destruction Pillar, North Knuckle and aerial Re Entry
+use native commands, hit data and animation records. Sagan Beam, Meteor Right,
+Pillar of Creation, Gravity Slingshot and Star Power retain their native
+command conditions and meter scripts. Air Destruction Pillar keeps its native
+Star Power requirement.
+
+Star Power uses the original manager child, including its owner gauge,
+countdown, expiration and mode-dependent branches. Fractional meter survives
+host sampling, and Annie child entities forward their native team-meter writes
+to the owner. Annie effect contexts request native opponent move categories when the
+opponent uses an older playback adapter; missing opponent categories previously left Star Power clamped
+at its protected minimum. Attack descriptors survive the authored slide,
+rising-special and super phase handoffs. The standing-HP rising follow-up
+returns to ground idle when its animation ends after landing.
+
+Autograph's final capture/all-meter cashout is unfinished and its command is
+disabled under `TODO(ANNIE)`. The dedicated Star Power HUD and exhaustive
+Star Power cancel, invulnerability and team/DHC parity remain unverified.
+No measured 60-fps or reference-clip parity is claimed. Stage and camera
+rendering were not changed in this integration.
+
+The Annie suite covers normals and command/recovery paths in both facings,
+special/projectile damage, meter gates, ground/air capture and release,
+Star Power countdown/expiration, fractional meter, a ground chain and rising-HP
+recovery, tags/assists, and deterministic replay of a beam, Star Power and a
+throw. Intro variants/skips are included in the shared intro regression.
+Windows Release build and all 26 CTest cases pass, including the existing
+Eliza regression after limiting category-context fallback to Annie effects.
+Normal, projectile and super preview frames were inspected. The portable
+executable in `runtime` is updated. Preview frames can be generated with
+`annie-moves-test <data-directory> --preview`.
+Training now has 15 playable characters from the 18-character roster.
+
+## Beowulf playable integration (2026-11-26)
+
+Beowulf is selectable in Training using his original FOIT tables, art,
+palettes, portraits, sounds and child entities. His movement, double jump,
+armed/unarmed standing, crouching and air normals, authored chains,
+crouching-HP launcher, chair tosses and Wulf Blitzer use native command
+conditions and hit data. Arm, buster, Moonsault and level-three grab entries
+retain their authored meter gates and presentation. Ground/air throws and
+Wulf Shoot enter controllable grab mode. Headbutts, knees, Fisherman slams,
+Bulldog, Gringo Killa, Cossack and splash paths use the native records for
+damage, target poses, movement and release. Native self-recovery branches
+return the player to an actionable idle.
+
+The chair remains a persistent native child. Tossing it changes the armed
+state; after its authored pickup cooldown, a nearby two-kick input selects
+the native pickup and restores the held chair without creating duplicates.
+The loader now retains named sprite points. Expressions 0x2c/0x2d read raw
+points, while 0x28/0x29 and attachment modes 7/8/11 use the origin, scale,
+facing and owner/spawner/opponent context recovered from `FUN_0044d080`,
+`FUN_00491a40` and `FUN_004971f0`. Missing tags clear the previous point,
+so animations drawing their own chair do not retain a stale held-chair layer.
+
+Grab scripts bind live captured-target reads one expression at a time,
+including writes followed by reads within a record. Scripted vertical
+positions reach the host before physics integration, and landing transitions
+retain the incoming downward velocity. Held LP/MP links are checked between
+immediate records; unflagged record scripts update each tick, allowing held
+LP to accumulate Hype at the original rate and cap. Tags, assists, reactions,
+intro variants, results and rollback use Beowulf's own heap-backed actor.
+Root defaults include 1.6666667461395264 gravity.
+
+Chairless-normal catch eligibility still needs the original hit-classification
+callbacks. Full pin/referee callbacks and exhaustive EX/regrab and Hype
+HUD/announcer presentation parity remain unfinished under `TODO(BEOWULF)`. Complete
+invulnerability or team-super parity is not claimed. No reference clip or
+measured frame-pacing comparison was supplied for this integration.
+
+Validation: Windows Release build and all 25 CTest cases pass. Beowulf's
+suite covers both facings, armed/unarmed normals, native special/super input
+and meter gates, chair toss/cooldown/pickup with a visible restored attachment,
+ground/air throws, Wulf Shoot, super catches and individual grab-finisher
+inputs. Held-LP Hype accumulation/cap, a four-hit launcher-to-air route,
+tags/assists and deterministic replay of a super, a deployed chair and an
+active grab are covered. Named-point tests verify raw/transformed coordinates
+and missing-tag clearing. Intro variants/skips and the existing peer rollback
+regression also pass. Idle, normal, chair and super renders were inspected;
+regenerate them with `beowulf-moves-test <data-directory> --preview`.
+The portable runtime is updated. Training now has 14 playable characters
+from the 18-character roster.
+
+## Eliza playable integration (2026-11-26)
+
+Eliza is selectable in Training with her original FOIT root/child tables,
+sprites, palettes, HUD portrait, super portrait and sound bank. Her movement,
+double jump, ground/crouching/air normals, authored chains, crouching-HP
+launcher, ground/air throws, servant summons, Osiris Spiral and Upper Khat
+use native input conditions, timelines, hitboxes and damage. Upper Khat's
+strengths retain their different attack positions. The chaise and Horus use
+their original child attacks; Albus enters his authored capture and release
+records. Scarab, bird-dive and Sekhmet super entries retain native meter gates
+and presentation.
+
+Ground/air Sekhmet summons select the original weapon entries and anchor.
+Sekhmet movement, attacks, air landings and manual anchor return use the
+authored state machine. Host capture context exposes the victim's native
+hit-stun category and current position to opponent-dependent sequence links.
+Tag-in follows Eliza's own dive/landing sequence. Tags, assists, reactions,
+intro variants, results and local rollback use her heap-backed playback state.
+Root defaults include 1.6666667461395264 gravity and an eight-tick startup gate.
+
+The original expression evaluator's 0x2a predicate calls `FUN_00491ba0`,
+which checks an enabled pending-hit pointer; 0x2b consumes that pointer.
+Eliza's adapter supplies this host context to her Sekhmet armor override.
+The override authors the 75-percent strike damage rather than replacing the
+move with ordinary hit stun. Fractional armor loss and anchor health drain
+survive snapshots and reach the health display. Servant position scripts
+observe changes to native facing immediately, including their temporary
+world-facing phase before adding an owner's absolute position.
+
+Blood-pool collection and Vampire-mode owner-health/healing callbacks remain
+unfinished under `TODO(ELIZA)`. The Vampire grab's damage/release path is
+exercised, but complete mode, invulnerability and team-super parity are not
+claimed. No reference clip or measured frame-pacing comparison was supplied
+for this integration.
+
+Validation: Windows Release build and all 24 CTest cases pass. Eliza's suite
+covers both facings, native commands and meter gates, normal/special combat,
+servant capture/release, ground/air throws, Sekhmet attacks and return,
+native armor including fractional damage, anchor health drain, tags/assists,
+and a four-hit launcher-to-air route. Snapshot replay covers the Scarab super,
+Sekhmet anchor and Sekhmet super, including health and fractional state.
+Intro variants/skips and the existing peer rollback regression also pass.
+Character, portrait, anchor and super-effect renders were inspected; regenerate
+samples with `eliza-moves-test <data-directory> --preview`.
+The portable runtime is updated. Training now has 13 playable characters
+from the 18-character roster.
+
+## Big Band playable integration (2026-11-26)
+
+Big Band is selectable in Training using his original FOIT tables, sprites,
+palettes, portraits, sounds and child effects. Movement, double jumps,
+standing/crouching/air normals, native chains and standing-MK launcher cancels,
+ground/air throws, Beat Extend, Giant Step, air cymbals, Brass Knuckles and
+A-Train use their authored conditions and damage. Brass Knuckles and A-Train
+retain the original back-charge requirements. Super Sonic Jazz, Timpani Drive
+and Strike Up The Band use native meter debits, presentation and timelines.
+Tags, assists, reactions, intro variants, results and rollback snapshots use
+Big Band's own heap-backed playback state. Native root defaults include
+1.8333332538604736 gravity and a six-tick startup timer.
+
+Super Sonic Jazz evaluates its contact override before a loop record resets
+its saved contact serial. Root contact reporting now increments the total
+contact counter, matching the existing child-entity implementation, so later
+hits can drive native multi-impact scripts. Timpani's duration follows its
+original record clock; its 120-count duration is decremented by animation
+records rather than replaced with a shorter frame timer. Armored moves use
+the native remaining-hit field through the existing strike-armor host path.
+
+Parry interception and the five-bar trumpet/song mode remain disabled through
+`TODO(BIGBAND)` and the shared supported-entry predicate. Their original
+host callbacks still need recovery. Complete armor, invulnerability, team-super
+and rhythm-mode parity are not claimed. No reference clip or measured frame
+pacing comparison was supplied for this pass.
+
+Validation: Windows Release build and all 23 CTest cases pass. The Big Band
+suite covers both facings, native command/meter gates, insufficient charge,
+armor consumption, multi-hit supers, ground/air throws and A-Train captures,
+tags/assists, deterministic snapshot replay and a three-hit ground-to-air
+launcher route. Sprite, HUD and super-effect render samples were inspected;
+regenerate them with `bigband-moves-test <data-directory> --preview`.
+The runtime executable includes this integration, bringing Training to
+12 selectable playable characters out of the 18-character roster.
+
+## Double playable integration (2026-11-26)
+
+Double is selectable in Training with her original FOIT moves and child tables,
+transformation sprites, palettes, HUD portrait, super cut-in and sound bank.
+Movement, double jumps, standing/crouching/air normals, authored chains,
+launcher follow-ups, ground/air throws, Cilia Slide, Luger shots, Hornet Bomber,
+air drops, the ground QCB kick step, the car super, Catellites and the Monster
+trap use native scripts,
+hitboxes, damage descriptors and command conditions. Tags, assists, reactions,
+throw techs, intro variants, results and local rollback snapshots use Double's
+own playback state. Her two-pass tag attack finishes in visible grounded idle;
+move changes restore native render scales. Her root defaults include gravity
+1.8333332538604736 and an
+eight-tick startup timer.
+
+Luger's projectile gate is evaluated before its own active-bit write, preserving
+its associated spawn. Startup hit descriptors carry into the slide, Bomber and
+air-drop follow-through. Rush Hour preserves authored off-screen travel, reads
+its opponent context for the return, and keeps camera tracking and push-box
+clamping from trapping the absent body. Its contact-driven override enters
+before the first car record resets its contact sentinel.
+
+Catellites emit six heads through the native manager's three immediate spawn
+passes. Those passes advance the record clock instead of discarding the whole
+record. Nested head spawns read live manager counters, and deferred manager
+writes bind the child's bit values before changing contexts. That preserves
+six distinct departure handshakes and lets the original manager clear the
+active-super flag after expiration. The head scripts retain their owner input,
+point-position and spawner contexts. Monster uses its original catch, damage
+and release records rather than a substituted hit.
+
+`double-moves-test` covers both facings, normal/special/super inputs, insufficient
+meter and spending the last required bars, all three strengths of shots,
+Bombers and air drops, multi-hit car impacts, six attacking Catellites and their
+expiration, Monster's damage/release, ordinary throws, tags/assists, save/replay
+and a ten-hit launcher-to-air chain. The intro suite includes Double's variants
+and skips. Double playback uses the existing heap-backed value-state wrapper to
+keep Windows rollback snapshots within stack limits as the roster grows. Future
+fighter adapters should use that wrapper rather than another inline optional
+playback object. Windows render samples can be regenerated with
+`double-moves-test <data-directory> --preview`.
+
+Nightmare Legion's opponent-linked morph sequence and the five-bar Moai mode
+remain disabled through `TODO(DOUBLE)` and the playback's shared entry predicate.
+Their original opponent/mode callbacks still need recovery. Complete guard,
+invulnerability and team-super parity are not claimed. No reference clip or
+measured frame-pacing comparison was supplied for this pass.
+
+Validation: Windows Release build and all 22 CTest cases pass. Transformation,
+air-normal, car, Catellite and Monster render samples were inspected. The
+rollback fixture converges for both peers over 1,000 combat frames, and Double
+has a separate deterministic snapshot/replay check.
 
 ## Fukua playable integration (2026-11-26)
 

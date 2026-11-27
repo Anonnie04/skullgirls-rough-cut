@@ -213,6 +213,14 @@ void apply_foit_assignment(const FoitExpression& expression, FoitScriptState& st
     }
     if (!variable && !bit) return;
 
+    // FUN_00491a40 returns the named point on the current sprite. The
+    // expression evaluator selects its X (0x2c) or Y (0x2d) component.
+    if(variable&&(expression.opcode==0x2c||expression.opcode==0x2d)&&
+       expression.left.flags==1&&expression.right.flags==0x24) {
+        const auto point=std::find_if(state.points.begin(),state.points.end(),[&](const auto& p){return p.name==expression.right.value;});
+        *variable=point!=state.points.end()?float(point->position[expression.opcode==0x2d]):0.0f;
+        return;
+    }
     if((expression.opcode==0x26 || expression.opcode==0x27) && variable &&
        expression.left.flags==1 && expression.left.value==0x27 && expression.right.flags==0x24 && state.move_categories) {
         const auto& tags=*state.move_categories;
@@ -256,6 +264,16 @@ void apply_foit_assignment(const FoitExpression& expression, FoitScriptState& st
     // FUN_0048c260 dispatches 0x1f to FUN_0048bbf0 (square root).
     // Squigly's homing sphere uses it to normalize its direction and speed.
     case 0x1f: if (*left < 0) return; result = std::sqrt(*left); break;
+    case 0x22: result = float(std::pow(double(*left),double(*right))); if(!std::isfinite(result))return; break;
+    // FUN_0048c260 reads C before overwriting it: lerp(A, B, C).
+    // Dahlia evaluates this three times for a quadratic bullet trajectory.
+    case 0x73: {
+        const auto weight=read_operand(expression.destination,state);
+        if(!weight)return;
+        result=(1.0f-*weight)* *left+*weight* *right;
+        if(!std::isfinite(result))return;
+        break;
+    }
     case 0x23: result = *left == *right ? 1.0f : 0.0f; break;
     case 0x24: result = *left != *right ? 1.0f : 0.0f; break;
     case 0x25: result = *left < *right ? 1.0f : 0.0f; break;

@@ -172,7 +172,13 @@ std::vector<SpriteFrame> read_frame_table(const SpriteBytes& foit, std::size_t m
                 SpriteFrame frame{};
                 frame.origin = {reader.signed_word(), reader.signed_word()};
                 frame.art_bank = static_cast<std::uint8_t>(reader.number(1));
-                reader.take(reader.number(1) * 12);
+                const auto points=reader.number(1);
+                for(unsigned point=0;point<points;++point) {
+                    const auto name=reader.number(4);
+                    const auto x=static_cast<std::int32_t>(reader.number(4));
+                    const auto y=static_cast<std::int32_t>(reader.number(4));
+                    frame.points.push_back({name,{x,y}});
+                }
                 const auto layers = reader.number(1);
                 for (unsigned slot = 0; slot < frame.layers.size(); ++slot) {
                     if (layers & (1u << slot)) {

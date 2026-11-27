@@ -110,11 +110,16 @@ struct FoitEffectPlayback {
     const FoitMoveTable* table = nullptr;
     unsigned move = 0, record = 0, ticks = 0, pose = 0;
     FoitScriptState state, defaults;
+    std::shared_ptr<const FoitScriptState> pending_owner_signal;
     FoitVisualState visual;
     float x = 0, y = 0, offset_x = 0, offset_y = 0;
     bool facing_right = true, alive = true, generic = false;
+    bool forward_team_meter=false; // Native child writes to its owner team.
+    bool script_facing_positions = false;
+    bool native_point_attachments = false;
     bool floor_collision = false;
     bool preserve_world_velocity_on_turn = false;
+    bool consume_immediate_ticks = false;
     bool persistent_owner = false;
     bool independent_owner = false;
     bool initialize_before_links = false;
@@ -170,6 +175,25 @@ struct FoitEffectPlayback {
 
     // Resolve reads from related entities before passing the operation to the local evaluator.
     FoitExpression bind(FoitExpression expression, const FoitScriptState& parent) const {
+        if((expression.opcode==0x28||expression.opcode==0x29||expression.opcode==0x2c||expression.opcode==0x2d)&&expression.right.flags==0x24) {
+            const auto flags=expression.left.flags;
+            const auto* source=flags==9?&parent:flags==0x91?(spawner?&*spawner:&parent):flags==0x11?&opponent:flags==1?&state:nullptr;
+            if(source) {
+                const auto point=std::find_if(source->points.begin(),source->points.end(),[&](const auto& p){return p.name==expression.right.value;});
+                float number=0.0f;
+                if(point!=source->points.end()) {
+                    const bool y=expression.opcode==0x29||expression.opcode==0x2d;
+                    number=float(point->position[y]);
+                    if(expression.opcode==0x28||expression.opcode==0x29) {
+                        number=std::trunc((number+source->point_offset[y])*source->variables[y?0xa5:0xa4].value_or(1.0f));
+                        number*=y?-1.0f:source->variables[0x38].value_or(1.0f)>0?1.0f:-1.0f;
+                    }
+                }
+                // The original lookup returns its zero point when the current
+                // sprite has no matching tag; do not retain a previous pose.
+                expression.opcode=1;expression.left.flags=0;std::memcpy(&expression.left.value,&number,4);expression.right={0,0};
+            }
+        }
         const bool category_test=expression.comparison && (expression.opcode==0x20 || expression.opcode==0x21);
         const bool category_value=!expression.comparison && (expression.opcode==0x26 || expression.opcode==0x27);
         if((category_test || category_value) && expression.left.value==0x27) {
@@ -195,7 +219,8 @@ struct FoitEffectPlayback {
                 return item;
             }
             const auto& context = item.flags == 0x11 ? opponent : item.flags == 0x91 && spawner ? *spawner : parent;
-            if ((item.flags == 9 || item.flags == 0x11 || item.flags == 0x19 || item.flags == 0x91) &&
+            if ((item.flags == 9 || item.flags == 0x11 || item.flags == 0x19 || item.flags == 0x91 ||
+                 (item.flags==0x13 && table && table->entity_name=="DOUBLE_FORTUNEHEAD")) &&
                 item.value < context.variables.size() && context.variables[item.value]) {
                 const float number = *context.variables[item.value];
                 item.flags = 0;
@@ -233,6 +258,14 @@ struct FoitEffectPlayback {
                 operand->flags = 0;
                 std::memcpy(&operand->value, &number, sizeof(number));
             }
+            if(forward_team_meter&&!expression.comparison&&expression.destination.flags==0x19&&expression.destination.value==0x42) {
+                for(auto* item:{&expression.left,&expression.right})
+                    if(item->flags==1&&item->value<state.variables.size()&&state.variables[item->value]) {
+                        const float number=*state.variables[item->value];item->flags=0;std::memcpy(&item->value,&number,4);
+                    }
+                parent_writes.push_back(expression);apply_foit_assignment(expression,parent);
+                parent.variables[0x42]=parent.team_variables[0x42];continue;
+            }
             if (captured_target && !expression.comparison && expression.destination.flags == 0x41) {
                 for (auto* operand : {&expression.left, &expression.right}) {
                     if (operand->flags != 1 || operand->value >= state.variables.size() || !state.variables[operand->value]) continue;
@@ -252,6 +285,12 @@ struct FoitEffectPlayback {
                         const float number = *state.variables[operand->value];
                         operand->flags = 0;
                         std::memcpy(&operand->value, &number, sizeof(number));
+                    } else if(operand->flags==0x20) {
+                        float index;std::memcpy(&index,&operand->value,sizeof(index));
+                        if(index>=0&&index<state.bits.size()&&std::trunc(index)==index&&state.bits[unsigned(index)]) {
+                            const float number=*state.bits[unsigned(index)]?1.0f:0.0f;
+                            operand->flags=0;std::memcpy(&operand->value,&number,sizeof(number));
+                        }
                     }
                 }
                 const bool to_spawner = (expression.destination.flags == 0x91 || expression.destination.flags == 0xb0) && spawner.has_value();
@@ -268,7 +307,7 @@ struct FoitEffectPlayback {
             } else {
                 const float previous_x = value(0xa0);
                 apply_foit_script({expression}, state, defaults);
-                if (!facing_right && expression.destination.flags == 1 && expression.destination.value == 0xa0 &&
+                if ((script_facing_positions ? value(0x38)<0 : !facing_right) && expression.destination.flags == 1 && expression.destination.value == 0xa0 &&
                     expression.left.flags == 1 && expression.left.value == 0xa0 &&
                     (expression.opcode == 2 || expression.opcode == 3))
                     state.variables[0xa0] = previous_x - (value(0xa0) - previous_x);
@@ -418,7 +457,14 @@ struct FoitEffectPlayback {
             }
             visual.enter(events, state, inputs, facing_right);
             state.variables[0x6b] = 0.0f;
-            if (value(0x3a) != 0) ticks = 0;
+            if (value(0x3a) != 0) {
+                if(consume_immediate_ticks) {
+                    // The original update loop advances the record clock on
+                    // each immediate pass, including multi-tick spawn records.
+                    if(ticks)--ticks;
+                    if(alive)continue;
+                } else ticks=0;
+            }
             if (ticks || !alive) break;
         } while (++immediate < 64);
         if (ticks) --ticks;
@@ -427,6 +473,24 @@ struct FoitEffectPlayback {
             state.variables[i] = float(timer > 0 ? timer - 1 : timer < 0 ? timer + 1 : 0);
         }
         x = value(0xa0); y = value(0xa1);
+        const auto attachment=value(0x39);
+        if(native_point_attachments&&(attachment==7||attachment==8||attachment==11)) {
+            // FUN_0049c4a0 uses FUN_004971f0 for named sprite-point
+            // attachments: owner (7), spawner (8), or opponent (11).
+            const auto& source=attachment==11?opponent:attachment==8&&spawner?*spawner:parent;
+            const float key=value(0x2d);std::uint32_t hash;std::memcpy(&hash,&key,4);
+            const auto point=std::find_if(source.points.begin(),source.points.end(),[&](const auto& p){return p.name==hash;});
+            if(point!=source.points.end()) {
+                const auto dx=std::trunc(float(point->position[0]+source.point_offset[0])*source.variables[0xa4].value_or(1.0f));
+                const auto dy=std::trunc(float(point->position[1]+source.point_offset[1])*source.variables[0xa5].value_or(1.0f));
+                x=source.variables[0xa0].value_or(x)+dx*(source.variables[0x38].value_or(1.0f)>0?1:-1);
+                y=source.variables[0xa1].value_or(y)-dy;
+                state.variables[0xa0]=x;state.variables[0xa1]=y;
+            } else {
+                x=source.variables[0xa0].value_or(x);y=source.variables[0xa1].value_or(y);
+                state.variables[0xa0]=x;state.variables[0xa1]=y;
+            }
+        }
         facing_right = value(0x38) > 0;
         const auto mode = value(0x3b);
         if (mode != 4) {

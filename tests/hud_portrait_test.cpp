@@ -40,6 +40,13 @@ int main() {
         const auto groups=skullgirls::read_hud_palette_map(metadata);
         check(groups[0]==0 && groups[1]==1 && groups[4]==2 && groups[10]==3 && groups[14]==3,
             "Portrait indices follow variable FOIT palette groups");
+        auto expanded=metadata;expanded[20]=5;expanded.insert(expanded.end(),{250,0,0,0});
+        const auto large_groups=skullgirls::read_hud_palette_map(expanded);
+        check(large_groups[4]==2&&large_groups[255]==4,"Large character palettes retain all addressable HUD indices");
+        auto veil=expanded;veil[20]=6;
+        veil.insert(veil.end(),{5,0,0,13,'p','o','r','t','r','a','i','t',' ','v','e','i','l'});
+        const auto veil_groups=skullgirls::read_hud_palette_map(veil);
+        check(veil_groups[2]==5&&veil_groups[255]==4,"Portrait veil uses its named ramp beyond 256 body colors");
         metadata.pop_back(); rejected=false;
         try { skullgirls::read_hud_palette_map(metadata); } catch(const std::runtime_error&) { rejected=true; }
         check(rejected,"Reject truncated portrait palette metadata");

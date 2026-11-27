@@ -1,4 +1,5 @@
 #include "foit_script.hpp"
+#include "foit_effects.hpp"
 
 #include <iostream>
 #include <cmath>
@@ -135,6 +136,41 @@ int main()
         state.variables[0]=25.0f;state.variables[2]=0.0f;
         apply_foit_assignment({0x1f,false,{1,0},{0,0},{1,2}},state);
         check(state.variables[2]==5.0f,"Square root normalizes the homing projectile's 3-4-5 direction");
+        state.variables[0]=10.0f;state.variables[1]=6.0f;
+        apply_foit_assignment({0x22,false,{1,0},{1,1},{1,2}},state);
+        check(state.variables[2]==1000000.0f,"Power extracts native decimal ammunition slots");
+        state.variables[1]=1000.0f;
+        apply_foit_assignment({0x22,false,{1,0},{1,1},{1,2}},state);
+        check(state.variables[2]==1000000.0f,"Overflowing power preserves the last finite script value");
+        state.variables[0]=10.0f;state.variables[1]=30.0f;state.variables[2]=0.25f;
+        apply_foit_assignment({0x73,false,{1,0},{1,1},{1,2}},state);
+        check(state.variables[2]==15.0f,"Interpolation reads its destination as the weight before writing");
+        state.variables[2]=1.5f;
+        apply_foit_assignment({0x73,false,{1,0},{1,1},{1,2}},state);
+        check(state.variables[2]==40.0f,"Native interpolation permits trajectory extrapolation");
+        state.points={{0x989071a9u,{70023,-98}}};state.variables[0xa8]=0.0f;
+        apply_foit_assignment({0x2c,false,{1,0x27},{0x24,0x989071a9u},{1,0xa8}},state);
+        check(state.variables[0xa8]==70023.0f,"Native named attachment point X is retained");
+        FoitEffectPlayback attached;
+        for(auto& slot:attached.state.variables)slot=0.0f;
+        attached.apply({{0x2d,false,{9,0x27},{0x24,0x989071a9u},{1,0xa8}}},state);
+        check(attached.value(0xa8)==-98.0f,"Child attachment point Y reads its parent's current sprite");
+        state.points.push_back({0xb1271b38u,{20,40}});state.point_offset={-3,-2};
+        state.variables[0x38]=-1.0f;state.variables[0xa4]=2.0f;state.variables[0xa5]=0.5f;
+        attached.apply({{0x28,false,{9,0x27},{0x24,0xb1271b38u},{1,0xa8}}},state);
+        check(attached.value(0xa8)==-34.0f,"World point X subtracts sprite origin, scales and mirrors");
+        attached.apply({{0x29,false,{9,0x27},{0x24,0xb1271b38u},{1,0xa8}}},state);
+        check(attached.value(0xa8)==-19.0f,"World point Y subtracts sprite origin before vertical conversion");
+        state.points.clear();
+        attached.apply({{0x2c,false,{9,0x27},{0x24,0x989071a9u},{1,0xa8}}},state);
+        check(attached.value(0xa8)==0.0f,"A missing attachment tag clears the previous sprite's point");
+        FoitEffectPlayback child;
+        child.state.bits[0]=true;
+        child.spawner.emplace().bits[0]=false;
+        FoitScriptState manager;manager.bits[0]=false;
+        child.apply({{0x0e,false,{0,0x3f800000},{0x20,0},{0xb0,0}}},{});
+        for(const auto& write:child.spawner_writes)apply_foit_assignment(write,manager);
+        check(manager.bits[0].value_or(false),"Deferred manager write tests the child's bit, not the manager's bit");
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

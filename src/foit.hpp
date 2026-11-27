@@ -14,6 +14,11 @@ using WorldBox = std::array<std::int64_t, 4>;
 WorldBox foit_world_box(const FoitBox& box, std::int32_t x, std::int32_t y, bool facing_right);
 bool foit_boxes_overlap(const WorldBox& a, const WorldBox& b);
 
+struct FoitNamedPoint {
+    std::uint32_t name;
+    std::array<std::int32_t, 2> position;
+};
+
 struct SpriteFrame {
     std::uint8_t art_bank;
     std::array<std::optional<SpriteLayer>, 8> layers;
@@ -21,6 +26,7 @@ struct SpriteFrame {
     std::array<std::int32_t, 2> primary_layer_offset;
     std::array<std::array<std::int32_t, 2>, 8> layer_offsets{};
     std::array<std::vector<FoitBox>, 3> box_groups;
+    std::vector<FoitNamedPoint> points;
 };
 
 std::vector<SpriteFrame> read_foit_frames(const SpriteBytes& foit, std::size_t main_art_size);
